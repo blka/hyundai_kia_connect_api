@@ -19,6 +19,14 @@ class Token:
     valid_until: dt.datetime = dt.datetime.min
     stamp: str = None
     pin: str | None = None
+    # CCI tokens (from Keycloak login / token exchange)
+    id_token: str | None = None
+    exchangeable_token: str | None = None
+    non_ccs_token: str | None = None
+    exchangeable_refresh_token: str | None = None
+    non_ccs_refresh_token: str | None = None
+    client_device_id: str | None = None
+    ccs_token: str | None = None
 
     def to_dict(self) -> dict:
         """Convert Token to a JSON‑serializable dict."""
@@ -46,4 +54,11 @@ class Token:
             valid_until=valid_until,
             stamp=data.get("stamp"),
             pin=data.get("pin"),
+            id_token=data.get("id_token"),
+            exchangeable_token=data.get("exchangeable_token"),
+            non_ccs_token=data.get("non_ccs_token"),
+            exchangeable_refresh_token=data.get("exchangeable_refresh_token"),
+            non_ccs_refresh_token=data.get("non_ccs_refresh_token"),
+            client_device_id=data.get("client_device_id"),
+            ccs_token=data.get("ccs_token"),
         )

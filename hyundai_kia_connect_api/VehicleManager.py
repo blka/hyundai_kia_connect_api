@@ -27,6 +27,7 @@ from .const import (
     REGION_CANADA,
     REGION_CHINA,
     REGION_EUROPE,
+    REGION_EUROPE_CCI,
     REGION_INDIA,
     REGION_NZ,
     REGION_USA,
@@ -38,6 +39,7 @@ from .const import (
 from .exceptions import APIError, AuthenticationOTPRequired
 from .HyundaiBlueLinkApiBR import HyundaiBlueLinkApiBR
 from .HyundaiBlueLinkApiUSA import HyundaiBlueLinkApiUSA
+from .HyundaiCciApiEU import HyundaiCciApiEU
 from .KiaUvoApiAU import KiaUvoApiAU
 from .KiaUvoApiCA import KiaUvoApiCA
 from .KiaUvoApiCN import KiaUvoApiCN
@@ -405,5 +407,7 @@ class VehicleManager:
             return KiaUvoApiIN(brand)
         elif REGIONS[region] == REGION_BRAZIL:
             return HyundaiBlueLinkApiBR(region, brand, language)
+        elif REGIONS[region] == REGION_EUROPE_CCI:
+            return HyundaiCciApiEU(region, brand, language)
         else:
             raise APIError(f"Unknown region {region}")
