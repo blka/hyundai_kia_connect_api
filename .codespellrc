@@ -1,0 +1,3 @@
+[codespell]
+ignore-words-list = adres,numer
+skip = *.json,*.ambr,node_modules,scripts/diagnostics
