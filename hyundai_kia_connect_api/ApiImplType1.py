@@ -1,9 +1,10 @@
 """ApiImplType1.py"""
 
 import datetime as dt
+import functools
 import logging
 import math
-from typing import Optional
+import threading
 
 import time
 from time import sleep
@@ -19,7 +20,14 @@ from .ApiImpl import (
 from .Token import Token
 from .Vehicle import Vehicle
 
-from .utils import get_child_value, parse_datetime, get_index_into_hex_temp
+from .utils import (
+    bool_or_none,
+    get_child_value,
+    normalize_battery_soc,
+    get_index_into_hex_temp,
+    parse_datetime,
+    window_is_open,
+)
 
 from .const import (
     DOMAIN,
@@ -29,6 +37,8 @@ from .const import (
     TEMPERATURE_UNITS,
     VEHICLE_LOCK_ACTION,
     ORDER_STATUS,
+    PRESSURE_SCALES,
+    PressureUnit,
 )
 
 from .exceptions import (
@@ -47,6 +57,29 @@ from .exceptions import (
 USER_AGENT_OK_HTTP: str = "okhttp/3.12.0"
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _retry_on_device_id_error(func):
+    """On DeviceIDError, re-register device_id and retry once.
+
+    EU server invalidates device_id when push delivery fails. Instead of
+    proactively rotating device_id after every control command (which causes
+    race conditions), we retry only when the error actually occurs.
+    """
+    _device_id_lock = threading.Lock()
+
+    @functools.wraps(func)
+    def wrapper(self, token, *args, **kwargs):
+        try:
+            return func(self, token, *args, **kwargs)
+        except DeviceIDError:
+            with _device_id_lock:
+                _LOGGER.debug(f"{DOMAIN} - DeviceIDError, re-registering device_id")
+                stamp = self._get_stamp()
+                token.device_id = self._get_device_id(stamp)
+            return func(self, token, *args, **kwargs)
+
+    return wrapper
 
 
 def _check_response_for_errors(response: dict) -> None:
@@ -165,6 +198,7 @@ class ApiImplType1(ApiImpl):
             # This is defensive programming in case the API structure changes
             pass
 
+    @_retry_on_device_id_error
     def get_vehicles(self, token: Token) -> list[Vehicle]:
         url = self.SPA_API_URL + "vehicles"
         response = self.session.get(
@@ -199,22 +233,32 @@ class ApiImplType1(ApiImpl):
             result.append(vehicle)
         return result
 
-    def _get_time_from_string(self, value, timesection) -> dt.datetime.time:
-        if value is not None:
+    def _get_time_from_string(self, value, timesection) -> dt.time | None:
+        if value is None:
+            return None
+        try:
+            if not str(value).strip() or int(value) == 0:
+                return None  # "0000" / "0" / "" = unset EV timer (issue #1206)
             lastTwo = int(value[-2:])
             if lastTwo > 60:
                 value = int(value) + 40
             if int(value) > 1260:
-                value = dt.datetime.strptime(str(value), "%H%M").time()
-            else:
-                d = dt.datetime.strptime(str(value), "%I%M")
-                if timesection > 0:
-                    d += dt.timedelta(hours=12)
-                value = d.time()
-        return value
+                return dt.datetime.strptime(str(value), "%H%M").time()
+            d = dt.datetime.strptime(str(value), "%I%M")
+            if timesection and timesection > 0:
+                d += dt.timedelta(hours=12)
+            return d.time()
+        except (ValueError, TypeError) as e:  # fmt: skip
+            _LOGGER.warning(
+                "Could not parse EV timer value %r (timesection=%r): %s",
+                value,
+                timesection,
+                e,
+            )
+            return None
 
     def _get_authenticated_headers(
-        self, token: Token, ccs2_support: Optional[int] = None
+        self, token: Token, ccs2_support: int | None = None
     ) -> dict:
         return {
             "Authorization": token.access_token,
@@ -255,8 +299,9 @@ class ApiImplType1(ApiImpl):
             get_child_value(state, "Drivetrain.Odometer"),
             DISTANCE_UNITS[1],
         )
-        vehicle.car_battery_percentage = get_child_value(
-            state, "Electronics.Battery.Level"
+        vehicle.car_battery_percentage = normalize_battery_soc(
+            get_child_value(state, "Electronics.Battery.Level"),
+            get_child_value(state, "Electronics.Battery.SensorReliability"),
         )
 
         vehicle.engine_is_running = get_child_value(state, "DrivingReady")
@@ -271,13 +316,13 @@ class ApiImplType1(ApiImpl):
         )
 
         if air_temp not in (None, "OFF") and unit in TEMPERATURE_UNITS:
-            vehicle.air_temperature = (float(air_temp), TEMPERATURE_UNITS[unit])
+            vehicle.air_temperature = (air_temp, TEMPERATURE_UNITS[unit])
 
         outside_temp = get_child_value(state, "Cabin.HVAC.OutsideTemperature.Value")
         outside_temp_unit = get_child_value(state, "Cabin.HVAC.OutsideTemperature.Unit")
         if outside_temp is not None and outside_temp_unit is not None:
             vehicle.outside_temperature = (
-                float(outside_temp),
+                outside_temp,
                 TEMPERATURE_UNITS[outside_temp_unit],
             )
 
@@ -393,17 +438,25 @@ class ApiImplType1(ApiImpl):
         )
 
         vehicle.hood_is_open = get_child_value(state, "Body.Hood.Open")
-        vehicle.front_left_window_is_open = get_child_value(
-            state, "Cabin.Window.Row1.Driver.Open"
+        vehicle.front_left_window_is_open = window_is_open(
+            state,
+            "Cabin.Window.Row1.Driver.Open",
+            "Cabin.Window.Row1.Driver.OpenLevel",
         )
-        vehicle.front_right_window_is_open = get_child_value(
-            state, "Cabin.Window.Row1.Passenger.Open"
+        vehicle.front_right_window_is_open = window_is_open(
+            state,
+            "Cabin.Window.Row1.Passenger.Open",
+            "Cabin.Window.Row1.Passenger.OpenLevel",
         )
-        vehicle.back_left_window_is_open = get_child_value(
-            state, "Cabin.Window.Row2.Left.Open"
+        vehicle.back_left_window_is_open = window_is_open(
+            state,
+            "Cabin.Window.Row2.Left.Open",
+            "Cabin.Window.Row2.Left.OpenLevel",
         )
-        vehicle.back_right_window_is_open = get_child_value(
-            state, "Cabin.Window.Row2.Right.Open"
+        vehicle.back_right_window_is_open = window_is_open(
+            state,
+            "Cabin.Window.Row2.Right.Open",
+            "Cabin.Window.Row2.Right.OpenLevel",
         )
         vehicle.sunroof_is_open = (
             bool(get_child_value(state, "Body.Sunroof.Glass.Open"))
@@ -424,6 +477,47 @@ class ApiImplType1(ApiImpl):
         )
         vehicle.tire_pressure_all_warning_is_on = bool(
             get_child_value(state, "Chassis.Axle.Tire.PressureLow")
+        )
+        # Tire pressure values (model B: raw is in the car's display unit; the
+        # scale depends on PressureUnit). Live-confirmed EU Santa Fe 2026:
+        #   bar (PressureUnit.BAR) raw 27 -> 2.7  (x0.1, 0.1-bar steps)
+        #   psi (PressureUnit.PSI) raw 38 -> 38   (x1, integer psi)
+        #   kPa (PressureUnit.KPA) raw 51 -> 255  (x5, 5-kPa steps)
+        # See const.PRESSURE_UNITS / PRESSURE_SCALES. Per-tire *_unit labels are
+        # read-only properties on Vehicle deriving from tire_pressure_unit.
+        _pu_raw = get_child_value(state, "Chassis.Axle.Tire.PressureUnit")
+        vehicle.tire_pressure_unit = (
+            PressureUnit(_pu_raw) if _pu_raw is not None else None
+        )
+        _scale = PRESSURE_SCALES.get(vehicle.tire_pressure_unit)
+        _pfl = get_child_value(state, "Chassis.Axle.Row1.Left.Tire.Pressure")
+        _pfr = get_child_value(state, "Chassis.Axle.Row1.Right.Tire.Pressure")
+        _prl = get_child_value(state, "Chassis.Axle.Row2.Left.Tire.Pressure")
+        _prr = get_child_value(state, "Chassis.Axle.Row2.Right.Tire.Pressure")
+        vehicle.tire_pressure_front_left = (
+            round(_pfl * _scale, 1) if _pfl is not None and _scale is not None else None
+        )
+        vehicle.tire_pressure_front_right = (
+            round(_pfr * _scale, 1) if _pfr is not None and _scale is not None else None
+        )
+        vehicle.tire_pressure_rear_left = (
+            round(_prl * _scale, 1) if _prl is not None and _scale is not None else None
+        )
+        vehicle.tire_pressure_rear_right = (
+            round(_prr * _scale, 1) if _prr is not None and _scale is not None else None
+        )
+        # Drive mode (e.g. "Eco", "Sport", "Comfort", "Snow", "Smart").
+        vehicle.drive_mode = get_child_value(state, "Chassis.DrivingMode.State")
+        # Low oil level warning (HEV/ICE). None when unreported (no sensor -> no
+        # entity downstream).
+        vehicle.oil_level_warning_is_on = bool_or_none(
+            get_child_value(
+                state, "Drivetrain.InternalCombustionEngine.OilLevelWarning"
+            )
+        )
+        # 12V auxiliary battery fault warning. None when unreported.
+        vehicle.battery_auxiliary_fail_warning_is_on = bool_or_none(
+            get_child_value(state, "Electronics.Battery.Auxiliary.FailWarning")
         )
         vehicle.trunk_is_open = get_child_value(state, "Body.Trunk.Open")
 
@@ -619,9 +713,9 @@ class ApiImplType1(ApiImpl):
                 vehicle.ev_battery_is_charging = True
 
         if get_child_value(state, "Location.GeoCoord.Latitude"):
-            location_last_updated_at = dt.datetime(
-                2000, 1, 1, tzinfo=self.data_timezone
-            )
+            # Missing Location.TimeStamp must surface as None (HA "unknown")
+            # rather than a 2000-01-01 sentinel that renders as "27 years ago".
+            # See kia_uvo #1771 sidetask.
             timestamp = get_child_value(state, "Location.TimeStamp")
             if timestamp is not None:
                 location_last_updated_at = dt.datetime(
@@ -633,6 +727,8 @@ class ApiImplType1(ApiImpl):
                     second=int(get_child_value(timestamp, "Sec")),
                     tzinfo=self.data_timezone,
                 )
+            else:
+                location_last_updated_at = None
 
             vehicle.location = (
                 get_child_value(state, "Location.GeoCoord.Latitude"),
@@ -648,6 +744,7 @@ class ApiImplType1(ApiImpl):
 
         vehicle.data = state
 
+    @_retry_on_device_id_error
     def start_charge(self, token: Token, vehicle: Vehicle) -> str:
         if not vehicle.ccu_ccs2_protocol_support:
             url = self.SPA_API_URL + "vehicles/" + vehicle.id + "/control/charge"
@@ -669,9 +766,9 @@ class ApiImplType1(ApiImpl):
         response = self.session.post(url, json=payload, headers=headers).json()
         _LOGGER.debug(f"{DOMAIN} - Start Charge Action Response: {response}")
         _check_response_for_errors(response)
-        token.device_id = self._get_device_id(self._get_stamp())
         return response["msgId"]
 
+    @_retry_on_device_id_error
     def stop_charge(self, token: Token, vehicle: Vehicle) -> str:
         if not vehicle.ccu_ccs2_protocol_support:
             url = self.SPA_API_URL + "vehicles/" + vehicle.id + "/control/charge"
@@ -693,9 +790,9 @@ class ApiImplType1(ApiImpl):
         response = self.session.post(url, json=payload, headers=headers).json()
         _LOGGER.debug(f"{DOMAIN} - Stop Charge Action Response: {response}")
         _check_response_for_errors(response)
-        token.device_id = self._get_device_id(self._get_stamp())
         return response["msgId"]
 
+    @_retry_on_device_id_error
     def set_charging_current(self, token: Token, vehicle: Vehicle, level: int) -> str:
         if not vehicle.ccu_ccs2_protocol_support:
             raise UnsupportedControlError(
@@ -715,9 +812,9 @@ class ApiImplType1(ApiImpl):
         ).json()
         _LOGGER.debug(f"{DOMAIN} - Set Charging Current Response: {response}")
         _check_response_for_errors(response)
-        token.device_id = self._get_device_id(self._get_stamp())
         return response["msgId"]
 
+    @_retry_on_device_id_error
     def set_charge_limits(
         self, token: Token, vehicle: Vehicle, ac: int, dc: int
     ) -> str:
@@ -745,9 +842,9 @@ class ApiImplType1(ApiImpl):
         ).json()
         _LOGGER.debug(f"{DOMAIN} - Set Charge Limits Response: {response}")
         _check_response_for_errors(response)
-        token.device_id = self._get_device_id(self._get_stamp())
         return response["msgId"]
 
+    @_retry_on_device_id_error
     def set_vehicle_to_load_discharge_limit(
         self, token: Token, vehicle: Vehicle, limit: int
     ) -> str:
@@ -765,9 +862,9 @@ class ApiImplType1(ApiImpl):
         ).json()
         _LOGGER.debug(f"{DOMAIN} - Set v2l limit Response: {response}")
         _check_response_for_errors(response)
-        token.device_id = self._get_device_id(self._get_stamp())
         return response["msgId"]
 
+    @_retry_on_device_id_error
     def lock_action(
         self, token: Token, vehicle: Vehicle, action: VEHICLE_LOCK_ACTION
     ) -> str:
@@ -790,7 +887,6 @@ class ApiImplType1(ApiImpl):
         response = self.session.post(url, json=payload, headers=headers).json()
         _LOGGER.debug(f"{DOMAIN} - Lock Action Response: {response}")
         _check_response_for_errors(response)
-        token.device_id = self._get_device_id(self._get_stamp())
         return response["msgId"]
 
     def check_action_status(
@@ -853,6 +949,7 @@ class ApiImplType1(ApiImpl):
             # Old code: raise APIError(f"No action found with ID {action_id}")
             return ORDER_STATUS.UNKNOWN
 
+    @_retry_on_device_id_error
     def schedule_charging_and_climate(
         self,
         token: Token,
@@ -964,7 +1061,6 @@ class ApiImplType1(ApiImpl):
         ).json()
         _LOGGER.debug(f"{DOMAIN} - Schedule Charging and Climate Response: {response}")
         _check_response_for_errors(response)
-        token.device_id = self._get_device_id(self._get_stamp())
         return response["msgId"]
 
     def _get_drv_seat_loc(self, vehicle: Vehicle) -> str:
@@ -986,6 +1082,7 @@ class ApiImplType1(ApiImpl):
             return "R"
         return "L"
 
+    @_retry_on_device_id_error
     def start_climate(
         self, token: Token, vehicle: Vehicle, options: ClimateRequestOptions
     ) -> str:
@@ -1059,9 +1156,9 @@ class ApiImplType1(ApiImpl):
             ).json()
         _LOGGER.debug(f"{DOMAIN} - Start Climate Action Response: {response}")
         _check_response_for_errors(response)
-        token.device_id = self._get_device_id(self._get_stamp())
         return response["msgId"]
 
+    @_retry_on_device_id_error
     def stop_climate(self, token: Token, vehicle: Vehicle) -> str:
         if not vehicle.ccu_ccs2_protocol_support:
             url = self.SPA_API_URL + "vehicles/" + vehicle.id + "/control/temperature"
@@ -1101,9 +1198,9 @@ class ApiImplType1(ApiImpl):
             ).json()
         _LOGGER.debug(f"{DOMAIN} - Stop Climate Action Response: {response}")
         _check_response_for_errors(response)
-        token.device_id = self._get_device_id(self._get_stamp())
         return response["msgId"]
 
+    @_retry_on_device_id_error
     def start_hazard_lights(self, token: Token, vehicle: Vehicle) -> str:
         url = self.SPA_API_URL_V2 + "vehicles/" + vehicle.id + "/ccs2/control/light"
 
@@ -1116,9 +1213,9 @@ class ApiImplType1(ApiImpl):
         ).json()
         _LOGGER.debug(f"{DOMAIN} - Start Hazard Lights Response: {response}")
         _check_response_for_errors(response)
-        token.device_id = self._get_device_id(self._get_stamp())
         return response["msgId"]
 
+    @_retry_on_device_id_error
     def start_hazard_lights_and_horn(self, token: Token, vehicle: Vehicle) -> str:
         url = self.SPA_API_URL_V2 + "vehicles/" + vehicle.id + "/ccs2/control/hornlight"
 
@@ -1131,9 +1228,9 @@ class ApiImplType1(ApiImpl):
         ).json()
         _LOGGER.debug(f"{DOMAIN} - Start Hazard Lights and Horn Response: {response}")
         _check_response_for_errors(response)
-        token.device_id = self._get_device_id(self._get_stamp())
         return response["msgId"]
 
+    @_retry_on_device_id_error
     def set_windows_state(
         self, token: Token, vehicle: Vehicle, options: WindowRequestOptions
     ) -> str:
@@ -1151,9 +1248,9 @@ class ApiImplType1(ApiImpl):
         ).json()
         _LOGGER.debug(f"{DOMAIN} - Window State Action Response: {response}")
         _check_response_for_errors(response)
-        token.device_id = self._get_device_id(self._get_stamp())
         return response["msgId"]
 
+    @_retry_on_device_id_error
     def set_navigation(
         self, token: Token, vehicle: Vehicle, poi_list: list[POIInfo]
     ) -> str:
@@ -1168,7 +1265,6 @@ class ApiImplType1(ApiImpl):
         ).json()
         _LOGGER.debug(f"{DOMAIN} - Set Navigation Response: {response}")
         _check_response_for_errors(response)
-        token.device_id = self._get_device_id(self._get_stamp())
         return response["msgId"]
 
     def refresh_access_token(self, token: Token) -> Token:

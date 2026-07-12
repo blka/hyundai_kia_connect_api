@@ -11,12 +11,15 @@ import re
 import time
 import typing as ty
 import uuid
-from typing import Optional
 from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
 from .ApiImpl import ApiImplSession, ClimateRequestOptions
-from .ApiImplType1 import ApiImplType1, _check_response_for_errors
+from .ApiImplType1 import (
+    ApiImplType1,
+    _check_response_for_errors,
+    _retry_on_device_id_error,
+)
 from .const import (
     BRAND_HYUNDAI,
     BRAND_KIA,
@@ -108,7 +111,7 @@ class KiaUvoApiIN(ApiImplType1):
         self.CLIENT_ID: str = self.CCSP_SERVICE_ID
 
     def _get_authenticated_headers(
-        self, token: Token, ccs2_support: Optional[int] = None
+        self, token: Token, ccs2_support: int | None = None
     ) -> dict:
         return {
             "Authorization": token.access_token,
@@ -192,20 +195,6 @@ class KiaUvoApiIN(ApiImplType1):
             result.append(vehicle)
         return result
 
-    def _get_time_from_string(self, value, timesection) -> dt.datetime.time:
-        if value is not None:
-            lastTwo = int(value[-2:])
-            if lastTwo > 60:
-                value = int(value) + 40
-            if int(value) > 1260:
-                value = dt.datetime.strptime(str(value), "%H%M").time()
-            else:
-                d = dt.datetime.strptime(str(value), "%I%M")
-                if timesection > 0:
-                    d += dt.timedelta(hours=12)
-                value = d.time()
-        return value
-
     def update_vehicle_with_cached_state(self, token: Token, vehicle: Vehicle) -> None:
         state = self._get_cached_vehicle_state(token, vehicle)
 
@@ -279,7 +268,7 @@ class KiaUvoApiIN(ApiImplType1):
                 self._update_vehicle_drive_info(vehicle, state)
 
     def _force_refresh_vehicle_state_ccs2(self, token: Token, vehicle: Vehicle) -> None:
-        url = self.SPA_API_URL + "vehicles/" + vehicle.id + "/ccs2/carstatus/latest"
+        url = self.SPA_API_URL + "vehicles/" + vehicle.id + "/ccs2/carstatus"
         response = self.session.get(
             url,
             headers=self._get_authenticated_headers(
@@ -581,6 +570,7 @@ class KiaUvoApiIN(ApiImplType1):
         mapped_response["vehicleStatus"] = response["resMsg"]
         return mapped_response
 
+    @_retry_on_device_id_error
     def charge_port_action(
         self, token: Token, vehicle: Vehicle, action: CHARGE_PORT_ACTION
     ) -> str:
@@ -593,7 +583,6 @@ class KiaUvoApiIN(ApiImplType1):
         ).json()
         _LOGGER.debug(f"{DOMAIN} - Charge Port Action Response: {response}")
         _check_response_for_errors(response)
-        token.device_id = self._get_device_id(self._get_stamp())
         return response["msgId"]
 
     def start_climate(
@@ -650,6 +639,7 @@ class KiaUvoApiIN(ApiImplType1):
         _check_response_for_errors(response)
         return response["msgId"]
 
+    @_retry_on_device_id_error
     def start_hazard_lights(self, token: Token, vehicle: Vehicle) -> str:
         url = self.SPA_API_URL_V2 + "vehicles/" + vehicle.id + "/ccs2/control/light"
 
@@ -662,9 +652,9 @@ class KiaUvoApiIN(ApiImplType1):
         ).json()
         _LOGGER.debug(f"{DOMAIN} - Start Hazard Lights Response: {response}")
         _check_response_for_errors(response)
-        token.device_id = self._get_device_id(self._get_stamp())
         return response["msgId"]
 
+    @_retry_on_device_id_error
     def start_hazard_lights_and_horn(self, token: Token, vehicle: Vehicle) -> str:
         url = self.SPA_API_URL_V2 + "vehicles/" + vehicle.id + "/ccs2/control/hornlight"
 
@@ -677,7 +667,6 @@ class KiaUvoApiIN(ApiImplType1):
         ).json()
         _LOGGER.debug(f"{DOMAIN} - Start Hazard Lights and Horn Response: {response}")
         _check_response_for_errors(response)
-        token.device_id = self._get_device_id(self._get_stamp())
         return response["msgId"]
 
     def _update_vehicle_properties_charge(self, vehicle: Vehicle, state: dict) -> None:
@@ -957,6 +946,7 @@ class KiaUvoApiIN(ApiImplType1):
             )
             return None
 
+    @_retry_on_device_id_error
     def valet_mode_action(
         self, token: Token, vehicle: Vehicle, action: VALET_MODE_ACTION
     ) -> str:
@@ -969,7 +959,6 @@ class KiaUvoApiIN(ApiImplType1):
         ).json()
         _LOGGER.debug(f"{DOMAIN} - Valet Mode Action Response: {response}")
         _check_response_for_errors(response)
-        token.device_id = self._get_device_id(self._get_stamp())
         return response["msgId"]
 
     def _get_stamp(self) -> str:

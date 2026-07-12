@@ -3,7 +3,7 @@ ci:
     autoupdate_commit_msg: "chore: pre-commit autoupdate"
 repos:
     - repo: https://github.com/astral-sh/ruff-pre-commit
-      rev: v0.15.18
+      rev: v0.15.20
       hooks:
           - id: ruff
             args:
@@ -31,6 +31,8 @@ repos:
       rev: v3.21.2
       hooks:
           - id: pyupgrade
+            args:
+                - --py312-plus
     - repo: https://github.com/adrienverge/yamllint.git
       rev: v1.38.0
       hooks:
@@ -50,7 +52,7 @@ repos:
           - id: python-typing-update
             stages: [manual]
             args:
-                - --py311-plus
+                - --py312-plus
                 - --force
                 - --keep-updates
             files: ^(/.+)?[^/]+\.py$

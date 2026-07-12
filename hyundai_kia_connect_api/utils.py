@@ -2,12 +2,15 @@
 """utils.py"""
 
 import datetime
+import logging
 import re
 from enum import IntEnum
-from typing import Optional, TypeVar
+from typing import Any, TypeVar
 
 
 T = TypeVar("T", bound=IntEnum)
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def to_int_enum(enum_class: type[T], value: str | int | T | None) -> T | None:
@@ -41,6 +44,23 @@ def get_child_value(data, key):
     return value
 
 
+def window_is_open(
+    state: dict[str, Any], open_key: str, open_level_key: str
+) -> bool | None:
+    """Whether a CCS2 window is open (fully open or vented).
+
+    CCS2 status exposes ``Open`` (fully-open flag) and ``OpenLevel`` (vent
+    level). A vented window reports ``Open=0`` with ``OpenLevel>0``; that must
+    be treated as open, not closed (see issue #1215). Returns ``None`` when
+    both fields are absent so callers can distinguish "unknown" from "closed".
+    """
+    open_value = get_child_value(state, open_key)
+    open_level = get_child_value(state, open_level_key)
+    if open_value is None and open_level is None:
+        return None
+    return bool(open_value) or bool(open_level)
+
+
 def get_float(value):
     if value is None:
         return None
@@ -54,6 +74,56 @@ def get_float(value):
         except ValueError:
             return value  # original fallback
     return value  # original fallback
+
+
+def float_or_none(value: str | int | float | None) -> float | None:
+    """Coerce to float; return None for missing or non-numeric values."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):  # fmt: skip
+        return None
+
+
+def bool_or_none(value: Any) -> bool | None:
+    """Cast to bool, preserving None (None -> None, else bool(value)).
+
+    Use for API fields that may be absent (e.g. oil/aux warnings on vehicles
+    without the sensor) so the downstream entity is not created when unreported.
+    """
+    return None if value is None else bool(value)
+
+
+def normalize_battery_soc(
+    value: int | float | None,
+    sensor_reliability: int | None = None,
+) -> int | None:
+    """Normalize 12V auxiliary battery state-of-charge.
+
+    Returns None when the car reports an unavailable or unreliable reading:
+    - sensor_reliability == 1  (CCS2 flag: "sensor unreliable")
+    - value is None
+    - value outside 0..100 (sentinel 0xFF=255, -1, etc.)
+
+    Otherwise returns int(value). A warning is logged only for out-of-range
+    sentinels (not for sensor_reliability==1, which is an expected state after
+    12V reset or during an ICCU failure on IONIQ 5 / Kia EV).
+    """
+    if sensor_reliability == 1:
+        return None
+    if value is None:
+        return None
+    if value < 0 or value > 100:
+        _LOGGER.warning(
+            "Invalid 12V auxiliary battery SOC value %s (expected 0..100); "
+            "treating as unavailable. A persistent 255/0xFF reading on "
+            "IONIQ 5 / Kia EV can be an early symptom of ICCU failure — "
+            "see kia_uvo#1771.",
+            value,
+        )
+        return None
+    return int(value)
 
 
 def get_hex_temp_into_index(value):
@@ -75,9 +145,11 @@ def get_index_into_hex_temp(value):
         return None
 
 
-def parse_datetime(value, timezone) -> datetime.datetime:
+def parse_datetime(value, timezone) -> datetime.datetime | None:
+    # Missing timestamp must surface as None (HA renders "unknown") rather than
+    # a 2000-01-01 sentinel that renders as "27 years ago". See kia_uvo #1771.
     if value is None:
-        return datetime.datetime(2000, 1, 1, tzinfo=timezone)
+        return None
 
     # Try parsing the new format: Tue, 24 Jun 2025 16:18:10 GMT
     try:
@@ -85,7 +157,7 @@ def parse_datetime(value, timezone) -> datetime.datetime:
 
         if timezone:
             # First, make it aware of UTC since 'GMT' implies UTC
-            utc_dt = dt_object.replace(tzinfo=datetime.timezone.utc)
+            utc_dt = dt_object.replace(tzinfo=datetime.UTC)
             # Then convert to the target timezone
             return utc_dt.astimezone(timezone)
         else:
@@ -121,7 +193,7 @@ def detect_timezone_for_date(
     date: datetime.datetime,
     ref_date: datetime.datetime,
     timezones: list[datetime.timezone],
-) -> Optional[datetime.timezone]:
+) -> datetime.timezone | None:
     """
     Guess an appropriate timezone given a date with an unknown timezone and a
     nearby reference time in any valid timezone.
