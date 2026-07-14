@@ -107,6 +107,20 @@ def parse_args() -> argparse.Namespace:
         help="Override output directory (default: diagnostics/ next to script)",
     )
     parser.add_argument("--env-file", help="Path to .env file")
+    parser.add_argument(
+        "--save-token",
+        action="store_true",
+        help="Cache the access token to disk (default: off, for safety). Only "
+        "needed to skip OTP on repeat USA/CA runs; the token file is written "
+        "outside the diagnostics/ folder so it is not shared accidentally.",
+    )
+    parser.add_argument(
+        "--no-redact",
+        action="store_true",
+        help="Do NOT redact credentials (Authorization, Set-Cookie, Stamp) and "
+        "GPS coordinates from the dump. Default redacts them. Use only when "
+        "debugging auth, and never share the resulting output.",
+    )
     args = parser.parse_args()
 
     env_file = args.env_file or ".env"
@@ -150,8 +164,10 @@ def default_output_dir(args: argparse.Namespace) -> Path:
 def token_path(args: argparse.Namespace) -> str:
     if args.token_file:
         return args.token_file
-    out_dir = default_output_dir(args)
-    return str(out_dir / f"token_{args.region}_{args.brand}.json")
+    # Keep the token cache OUTSIDE the shareable diagnostics/ dir so it is
+    # not picked up when the diagnostics folder is zipped/shared.
+    script_dir = Path(__file__).resolve().parent
+    return str(script_dir / "tokens" / f"token_{args.region}_{args.brand}.json")
 
 
 def load_token(path: str) -> Token | None:
@@ -170,8 +186,65 @@ def save_token(token: Token, path: str) -> None:
         json.dump(token.to_dict(), f, indent=2)
 
 
+# Credential and location redaction. On by default (toggle off with
+# --no-redact). Prevents the most common leak path: access tokens in
+# request/response headers and GPS coordinates in response bodies.
+_REDACT_SENSITIVE = True
+
+_SENSITIVE_HEADERS = frozenset(
+    {"authorization", "set-cookie", "cookie", "stamp", "ccsp-stamp"}
+)
+_SENSITIVE_KEYS = frozenset(
+    {
+        "access_token",
+        "accesstoken",
+        "refresh_token",
+        "refreshtoken",
+        "device_id",
+        "deviceid",
+        "sid",
+        "rmtoken",
+        "sessionid",
+        "lat",
+        "lon",
+        "latitude",
+        "longitude",
+        "gpslatitude",
+        "gpslongitude",
+        "_location_latitude",
+        "_location_longitude",
+        "coord",
+        "geocoord",
+    }
+)
+
+
+def redact_sensitive(obj: Any) -> Any:
+    """Recursively redact credentials and GPS coordinates from a dump object.
+
+    Replaces values of sensitive header names (Authorization, Set-Cookie,
+    Stamp, ...) and sensitive body keys (tokens, device/session ids, lat/lon)
+    with "<REDACTED>". Structure is preserved so the dump stays useful for
+    debugging field shapes and non-sensitive values.
+    """
+    if isinstance(obj, dict):
+        out: dict[str, Any] = {}
+        for key, value in obj.items():
+            lower = key.lower() if isinstance(key, str) else key
+            if lower in _SENSITIVE_HEADERS or lower in _SENSITIVE_KEYS:
+                out[key] = "<REDACTED>"
+            else:
+                out[key] = redact_sensitive(value)
+        return out
+    if isinstance(obj, list):
+        return [redact_sensitive(item) for item in obj]
+    return obj
+
+
 def write_json(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    if _REDACT_SENSITIVE:
+        data = redact_sensitive(data)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, default=str, ensure_ascii=False)
 
@@ -333,7 +406,9 @@ def full_vehicle_dict(vehicle: Vehicle) -> dict:
 
 
 def main() -> None:
+    global _REDACT_SENSITIVE
     args = parse_args()
+    _REDACT_SENSITIVE = not args.no_redact
 
     region_code = REGION_MAP[args.region]
     brand_code = BRAND_MAP[args.brand]
@@ -356,10 +431,12 @@ def main() -> None:
     install_http_recorder(out_dir)
 
     login(manager)
-    save_token(manager.token, tpath)
+    if args.save_token:
+        save_token(manager.token, tpath)
 
     manager.check_and_refresh_token()
-    save_token(manager.token, tpath)
+    if args.save_token:
+        save_token(manager.token, tpath)
 
     # API capability / metadata snapshot
     write_json(out_dir / "api_capabilities.json", collect_api_capabilities(api))
@@ -387,7 +464,10 @@ def main() -> None:
                 )
 
     print(f"Diagnostics written to {out_dir}")
-    print(f"Token cached in {tpath}")
+    if args.save_token:
+        print(f"Token cached in {tpath}")
+    else:
+        print("Token not cached (use --save-token to cache it for repeat runs)")
 
 
 if __name__ == "__main__":
