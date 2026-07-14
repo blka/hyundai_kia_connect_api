@@ -25,28 +25,34 @@ scripts/diagnostics/2026-06-29_142327_eu_hyundai/
 ├── raw_vehicle_{id}_location_park.json
 ├── raw_vehicle_{id}_drivinginfo.json
 ├── raw_vehicle_{id}_profile.json # /vehicles/{id}/profile (ApiImplType1 regions only)
-├── vehicle_{id}.json               # full parsed Vehicle object
-└── token_{region}_{brand}.json     # cached token
+└── vehicle_{id}.json               # full parsed Vehicle object
 ```
+
+The access token cache (only written with `--save-token`) lives **outside** this folder, in `scripts/tokens/token_{region}_{brand}.json`, so it is not picked up when the `diagnostics/` folder is zipped or shared.
 
 ## Security warning
 
-**The generated files contain sensitive data:**
+By default the script **redacts** the highest-risk fields before writing any file:
+
+- `Authorization` / `Set-Cookie` / `Stamp` / `CCSP-Stamp` request and response headers (the access token lives here)
+- `access_token`, `refresh_token`, `device_id`, `sid`, `rmtoken`, `sessionId` body keys
+- GPS coordinates (`lat`, `lon`, `latitude`, `longitude`, `coord`, `gpsLatitude`, `gpsLongitude`, `_location_latitude`, `_location_longitude`)
+
+These are replaced with `<REDACTED>` so the dump is safe to share without leaking credentials or location. The access token is **not written to disk at all** unless you pass `--save-token` (and even then it goes to `scripts/tokens/`, outside the shared `diagnostics/` folder).
+
+**The dump still contains data you must review manually before sharing:**
 
 - VIN
-- precise GPS location (coordinates + timestamp)
-- access tokens and refresh tokens
-- device IDs, session IDs
-- e-mail / user ID
+- `vehicle.id`, `registration_date`, `username`, e-mail / user ID
 - door, window, climate, fuel, battery, tire pressure status
 - registration date / license plate (if provided by the API)
 
-**Do not share these files before sanitizing.** Before attaching them to a GitHub issue, forum post, or sending them to anyone:
+Before attaching to a GitHub issue, forum post, or sending to anyone:
 
 1. Remove or mask `VIN`, `vehicle.id`, `registration_date`, `username`, e-mail.
-2. Shift or mask GPS coordinates (`_location_latitude`, `_location_longitude`).
-3. Remove `access_token`, `refresh_token`, `device_id`, `sid`, `rmtoken`.
-4. Make sure the file name itself does not contain the vehicle ID.
+2. Make sure the file name itself does not contain the vehicle ID.
+
+If you are debugging auth and need the raw token/headers, pass `--no-redact` — but **never share** output produced with that flag.
 
 ## Requirements
 
@@ -122,7 +128,7 @@ Precedence: **CLI flags > environment variables > `.env` file**.
 
 ## OTP
 
-For **USA** and **CA**, the script prompts for an OTP channel (`E` for e-mail, `S` for SMS), sends the code, and asks you to type it in. The token is cached afterwards, so later runs on the same device usually skip OTP.
+For **USA** and **CA**, the script prompts for an OTP channel (`E` for e-mail, `S` for SMS), sends the code, and asks you to type it in. The token is cached only if you pass `--save-token`, so later runs on the same device can skip OTP.
 
 ## What the script does and does not do
 
@@ -138,7 +144,8 @@ For **USA** and **CA**, the script prompts for an OTP channel (`E` for e-mail, `
 ### It does not
 
 - **Send any command to the vehicle** (no lock/unlock, no climate start, no force refresh). The script is read-only.
-- Automatically redact sensitive data — you must do that before sharing.
+- Redact **everything** — credentials and GPS coordinates are redacted by default, but VIN, `vehicle.id`, `registration_date`, username, and e-mail are left in place. Review and mask those manually before sharing (see Security warning).
+- Cache the access token unless you pass `--save-token`.
 
 ## Full example session
 
@@ -168,22 +175,15 @@ ls -la scripts/diagnostics/
 
 ## Sanitizing data before sharing — example
 
-After running the script, manually edit the JSON files or use a redaction tool. Fields you typically want to clear:
+Credentials (`access_token`, `refresh_token`, `device_id`, `sid`, `rmtoken`, `Authorization`/`Set-Cookie`/`Stamp` headers) and GPS coordinates are already redacted by default. After running the script, manually edit the JSON files (or use a redaction tool) to clear the remaining identifying fields:
 
 ```text
 VIN
 id
 key
 username
-access_token
-refresh_token
-device_id
-sid
-rmtoken
 registration_date
-_location_latitude
-_location_longitude
-_location_last_set_time
+e-mail
 ```
 
 Share only the response structure and non-identifying values, e.g.:
