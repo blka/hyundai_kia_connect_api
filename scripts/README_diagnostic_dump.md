@@ -57,12 +57,29 @@ If you are debugging auth and need the raw token/headers, pass `--no-redact` —
 ## Requirements
 
 - Python 3.10+
-- `hyundai_kia_connect_api` installed in editable mode:
+- The `requests` package (used directly by the script to record raw HTTP calls).
+- The `hyundai_kia_connect_api` library itself.
+
+The simplest way to get **both** at once is to install the library in editable
+mode from the repo root — this pulls `requests` (plus `beautifulsoup4`,
+`certifi`, `tzdata`, `pycryptodome`) as declared dependencies:
 
 ```bash
 cd /path/to/hyundai_kia_connect_api
 pip install -e .
 ```
+
+If you instead run the script standalone (without installing the library),
+you must install `requests` yourself, or you will get
+`ModuleNotFoundError: No module named 'requests'` on the first HTTP call:
+
+```bash
+pip install requests
+```
+
+`python-dotenv` is **optional** — the script has a built-in `.env` parser
+fallback, so you do not need to install it unless you want the full
+`python-dotenv` behavior.
 
 ## `.env` setup
 
