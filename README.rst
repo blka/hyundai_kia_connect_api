@@ -21,7 +21,7 @@ This package is designed to simplify the complexity of using multiple regions.  
 
 Europe Hyundai and Kia login logic is based on the `bluelink-refresh-token <https://github.com/TMA84/bluelink-refresh-token>`_ project.  Username/password login is supported directly for Kia, Hyundai, and Genesis (EU) — no browser or manual token extraction needed. The ``pycryptodome`` package (included as a dependency) is used for RSA password encryption during the EU login flow.
 
-Python 3.10 or newer is required to use this package. Vehicle manager is the key class that is called to manage the vehicle lists.  One vehicle manager should be used per login. Key data points required to instantiate vehicle manager are::
+Python 3.12 or newer is required to use this package. Vehicle manager is the key class that is called to manage the vehicle lists.  One vehicle manager should be used per login. Key data points required to instantiate vehicle manager are::
 
     region: int
     brand: int,

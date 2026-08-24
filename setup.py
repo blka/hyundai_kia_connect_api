@@ -11,11 +11,10 @@ with open("HISTORY.rst") as history_file:
 with open("requirements.txt") as f:
     requirements = f.read().splitlines()
 
-long_description = readme + "\n\n" + history
 long_description = readme
 
 test_requirements = [
-    "pytest>=3",
+    "pytest>=8",
     "syrupy>=4.0.0",
 ]
 
@@ -24,7 +23,7 @@ setup(
     author_email="fuatakgun@gmail.com",
     python_requires=">=3.12",
     classifiers=[
-        "Development Status :: 4 - Beta",
+        "Development Status :: 5 - Production/Stable",
         "Intended Audience :: Developers",
         "License :: OSI Approved :: MIT License",
         "Natural Language :: English",
