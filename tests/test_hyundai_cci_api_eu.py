@@ -23,9 +23,9 @@ def _mock_crypto():
     mock_cipher = MagicMock()
     mock_cipher.encrypt.return_value = b"\x00" * 256  # fake encrypted password
     return [
-        patch("hyundai_kia_connect_api.HyundaiCciApiEU.RSA.construct"),
+        patch("hyundai_kia_connect_api.GspaApiEU.RSA.construct"),
         patch(
-            "hyundai_kia_connect_api.HyundaiCciApiEU.PKCS1_v1_5.new",
+            "hyundai_kia_connect_api.GspaApiEU.PKCS1_v1_5.new",
             return_value=mock_cipher,
         ),
     ]
@@ -80,7 +80,7 @@ def test_login_with_password_certs_endpoint_fails():
     with ExitStack() as stack:
         stack.enter_context(
             patch(
-                "hyundai_kia_connect_api.HyundaiCciApiEU.ApiImplSession",
+                "hyundai_kia_connect_api.GspaApiEU.ApiImplSession",
                 return_value=_cci_session(MagicMock(status_code=500), MagicMock()),
             )
         )
@@ -97,7 +97,7 @@ def test_login_with_password_signin_returns_non_302():
     with ExitStack() as stack:
         stack.enter_context(
             patch(
-                "hyundai_kia_connect_api.HyundaiCciApiEU.ApiImplSession",
+                "hyundai_kia_connect_api.GspaApiEU.ApiImplSession",
                 return_value=_cci_session(_certs_response(), signin_resp),
             )
         )
@@ -113,7 +113,7 @@ def test_login_with_password_signin_no_code_in_redirect():
     with ExitStack() as stack:
         stack.enter_context(
             patch(
-                "hyundai_kia_connect_api.HyundaiCciApiEU.ApiImplSession",
+                "hyundai_kia_connect_api.GspaApiEU.ApiImplSession",
                 return_value=_cci_session(
                     _certs_response(),
                     _signin_resp("https://example.com/login?no_code=true"),
@@ -134,7 +134,7 @@ def test_login_with_password_signin_error_in_redirect():
     with ExitStack() as stack:
         stack.enter_context(
             patch(
-                "hyundai_kia_connect_api.HyundaiCciApiEU.ApiImplSession",
+                "hyundai_kia_connect_api.GspaApiEU.ApiImplSession",
                 return_value=_cci_session(
                     _certs_response(),
                     _signin_resp(
@@ -156,7 +156,7 @@ def test_login_with_password_signin_redirect_to_login_page():
     with ExitStack() as stack:
         stack.enter_context(
             patch(
-                "hyundai_kia_connect_api.HyundaiCciApiEU.ApiImplSession",
+                "hyundai_kia_connect_api.GspaApiEU.ApiImplSession",
                 return_value=_cci_session(
                     _certs_response(),
                     _signin_resp(
@@ -183,7 +183,7 @@ def test_login_with_password_waf_block_detected():
     with ExitStack() as stack:
         stack.enter_context(
             patch(
-                "hyundai_kia_connect_api.HyundaiCciApiEU.ApiImplSession",
+                "hyundai_kia_connect_api.GspaApiEU.ApiImplSession",
                 return_value=session,
             )
         )
@@ -200,7 +200,7 @@ def test_login_with_password_cci_token_exchange_fails():
     with ExitStack() as stack:
         stack.enter_context(
             patch(
-                "hyundai_kia_connect_api.HyundaiCciApiEU.ApiImplSession",
+                "hyundai_kia_connect_api.GspaApiEU.ApiImplSession",
                 return_value=_cci_session(
                     _certs_response(),
                     _signin_resp("https://example.com/cb?code=abc123"),
@@ -211,7 +211,7 @@ def test_login_with_password_cci_token_exchange_fails():
             stack.enter_context(p)
         stack.enter_context(
             patch(
-                "hyundai_kia_connect_api.HyundaiCciApiEU.requests.post",
+                "hyundai_kia_connect_api.GspaApiEU.requests.post",
                 return_value=token_resp,
             )
         )
@@ -241,7 +241,7 @@ def test_login_with_password_success():
     with ExitStack() as stack:
         stack.enter_context(
             patch(
-                "hyundai_kia_connect_api.HyundaiCciApiEU.ApiImplSession",
+                "hyundai_kia_connect_api.GspaApiEU.ApiImplSession",
                 return_value=_cci_session(
                     _certs_response(),
                     _signin_resp("https://example.com/cb?code=abc123"),
@@ -252,7 +252,7 @@ def test_login_with_password_success():
             stack.enter_context(p)
         stack.enter_context(
             patch(
-                "hyundai_kia_connect_api.HyundaiCciApiEU.requests.post",
+                "hyundai_kia_connect_api.GspaApiEU.requests.post",
                 side_effect=[cci_token_resp, exchange_resp],
             )
         )
@@ -274,21 +274,6 @@ def test_login_with_password_success():
     assert (info["valid_until"] - now).total_seconds() == pytest.approx(86400, abs=5)
 
 
-# ── Hyundai-only brand constraint ────────────────────────
-
-
-def test_kia_brand_raises_not_implemented():
-    """Kia brand should raise NotImplementedError — use KiaUvoApiEU for Kia EU."""
-    with pytest.raises(NotImplementedError, match="Kia CCI EU not yet implemented"):
-        HyundaiCciApiEU(region=1, brand=1, language="en")
-
-
-def test_genesis_brand_raises_not_implemented():
-    """Genesis brand should raise NotImplementedError."""
-    with pytest.raises(NotImplementedError, match="Genesis CCI EU not yet implemented"):
-        HyundaiCciApiEU(region=1, brand=3, language="en")
-
-
 def test_hyundai_constants_set_correctly():
     """Hyundai brand sets the correct CCI constants."""
     api = _make_hyundai_api()
@@ -296,7 +281,7 @@ def test_hyundai_constants_set_correctly():
     assert api.ONEAPP_REDIRECT_URI == "https://oneapp.hyundai.com/redirect"
     assert api.CCI_API_URL == "https://cci-api-eu.hyundai.com"
     assert api.CCI_DOMAIN_API_URL == "https://cci-api-eu.hyundai.com/domain/api/"
-    assert api._cci_package_id == "com.hyundai.oneapp.eu"
+    assert api.CCI_PACKAGE_ID == "com.hyundai.oneapp.eu"
     assert api._cci_client_name == "hyundai"
 
 
@@ -427,7 +412,7 @@ def test_refresh_cci_token_uses_v1_endpoint():
     }
     with (
         patch(
-            "hyundai_kia_connect_api.HyundaiCciApiEU.requests.post",
+            "hyundai_kia_connect_api.GspaApiEU.requests.post",
             side_effect=[refresh_resp, exchange_resp],
         ) as mock_post,
     ):
@@ -532,7 +517,7 @@ def test_test_token_returns_true_on_200():
     api = _make_hyundai_api()
     token = _make_token()
     with patch(
-        "hyundai_kia_connect_api.HyundaiCciApiEU.requests.get",
+        "hyundai_kia_connect_api.GspaApiEU.requests.get",
         return_value=MagicMock(status_code=200),
     ):
         assert api.test_token(token) is True
@@ -543,7 +528,7 @@ def test_test_token_returns_false_on_non_200():
     api = _make_hyundai_api()
     token = _make_token()
     with patch(
-        "hyundai_kia_connect_api.HyundaiCciApiEU.requests.get",
+        "hyundai_kia_connect_api.GspaApiEU.requests.get",
         return_value=MagicMock(status_code=401),
     ):
         assert api.test_token(token) is False
@@ -578,7 +563,7 @@ def test_get_vehicles_parses_cci_response():
         }
     ]
     with patch(
-        "hyundai_kia_connect_api.HyundaiCciApiEU.requests.get",
+        "hyundai_kia_connect_api.GspaApiEU.requests.get",
         return_value=mock_response,
     ):
         vehicles = api.get_vehicles(token)
