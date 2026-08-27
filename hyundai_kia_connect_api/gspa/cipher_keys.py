@@ -165,11 +165,14 @@ class GspaCipher:
         return int(q["lconst"]) ^ _lapply(q["lcols"], b)
 
     def _mask_byte(self, global_round: int, col: int, src_bytes: list[int]) -> int:
-        """Compute mask byte: g0[b0]^g1[b1]^g2[b2]^g3[b3].
+        """Compute the 32-bit mask word for a round column.
 
-        Returns 0 when no masks are loaded.  Mask integration is validated
-        by the live gate (current parameter set carries all-zero masks;
-        bit-exact vectors cannot distinguish the integration point).
+        mask = g0[b0] ^ g1[b1] ^ g2[b2] ^ g3[b3], where b0..b3 are the
+        column's state bytes before the sbox layer.  The word is XORed
+        once into the round's linear output word.  Returns 0 when no
+        masks are loaded.  Mask integration is validated by the live
+        gate (current parameter set carries all-zero masks; bit-exact
+        vectors cannot distinguish the integration point).
         """
         if self._masks_parsed is None:
             return 0
@@ -205,10 +208,11 @@ class GspaCipher:
                 self._lin_lookup(lin_group, base + j, (inter >> (8 * (3 - j))) & 0xFF)
                 for j in range(4)
             ]
-            # Mask layer (brand-specific, no-op when masks absent or zero).
-            mb = self._mask_byte(global_round, col, sbox_out)
-            lin_out = [b ^ mb for b in lin_out]
-            out = lin_out[0] ^ lin_out[1] ^ lin_out[2] ^ lin_out[3]
+            # Mask layer (brand-specific, no-op when masks absent or zero):
+            # the 32-bit mask word derived from the column's pre-sbox state
+            # bytes is XORed once into the linear output word.
+            mb = self._mask_byte(global_round, col, list(state[sbase : sbase + 4]))
+            out = lin_out[0] ^ lin_out[1] ^ lin_out[2] ^ lin_out[3] ^ mb
             for j in range(4):
                 state[sbase + j] = (out >> (8 * (3 - j))) & 0xFF
         return state
