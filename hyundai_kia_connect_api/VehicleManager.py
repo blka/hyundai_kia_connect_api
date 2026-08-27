@@ -40,6 +40,7 @@ from .exceptions import APIError, AuthenticationOTPRequired
 from .HyundaiBlueLinkApiBR import HyundaiBlueLinkApiBR
 from .HyundaiBlueLinkApiUSA import HyundaiBlueLinkApiUSA
 from .HyundaiCciApiEU import HyundaiCciApiEU
+from .KiaCciApiEU import KiaCciApiEU
 from .KiaUvoApiAU import KiaUvoApiAU
 from .KiaUvoApiCA import KiaUvoApiCA
 from .KiaUvoApiCN import KiaUvoApiCN
@@ -390,6 +391,10 @@ class VehicleManager:
         elif REGIONS[region] == REGION_EUROPE:
             return KiaUvoApiEU(region, brand, language)
         elif REGIONS[region] == REGION_EUROPE_CCI:
+            if BRANDS[brand] == BRAND_KIA:
+                return KiaCciApiEU(region, brand, language)
+            if BRANDS[brand] == BRAND_GENESIS:
+                raise APIError("Genesis EU CCI/GSPA is not supported yet")
             return HyundaiCciApiEU(region, brand, language)
         elif REGIONS[region] == REGION_USA and (
             BRANDS[brand] == BRAND_HYUNDAI or BRANDS[brand] == BRAND_GENESIS

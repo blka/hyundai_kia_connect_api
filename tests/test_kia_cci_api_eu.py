@@ -1,0 +1,179 @@
+"""Tests for KiaCciApiEU — brand constants, cipher selection, the login stub
+flow, and the NotImplementedError vehicle-parser stubs (zero network)."""
+
+from contextlib import ExitStack
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from hyundai_kia_connect_api.exceptions import APIError
+from hyundai_kia_connect_api.gspa.cipher_keys import kia_cipher
+from hyundai_kia_connect_api.KiaCciApiEU import KiaCciApiEU
+
+# ── Helpers ─────────────────────────────────────────────────────
+
+
+def _make_kia_api() -> KiaCciApiEU:
+    """Create a KiaCciApiEU instance for testing (brand=1 = Kia)."""
+    return KiaCciApiEU(region=9, brand=1, language="en")
+
+
+def _mock_crypto():
+    """Return patches for RSA.construct and PKCS1_v1_5.new."""
+    mock_cipher = MagicMock()
+    mock_cipher.encrypt.return_value = b"\x00" * 256  # fake encrypted password
+    return [
+        patch("hyundai_kia_connect_api.GspaApiEU.RSA.construct"),
+        patch(
+            "hyundai_kia_connect_api.GspaApiEU.PKCS1_v1_5.new",
+            return_value=mock_cipher,
+        ),
+    ]
+
+
+def _certs_response() -> MagicMock:
+    """A 200 certs response with a fake JWK."""
+    resp = MagicMock(status_code=200)
+    resp.json.return_value = {
+        "retValue": {
+            "kid": "test-kid",
+            "n": "AJRQISPa0AJRQISPa0AJRQISPa0AJRQISPa0AJRQISPa0A",
+            "e": "AQAB",
+        }
+    }
+    return resp
+
+
+def _cci_session(certs_resp: MagicMock, signin_resp: MagicMock) -> MagicMock:
+    """A mock ApiImplSession for CCI login steps 1-3 (authorize, certs, signin).
+
+    The authorize response is a non-WAF page (empty text, clean url) so the
+    WAF-detection check in _login_with_password does not trigger.
+    """
+    authorize_resp = MagicMock(text="", url="https://idpconnect-eu.kia.com/authorize")
+    session = MagicMock()
+    session.get.side_effect = [authorize_resp, certs_resp]
+    session.post.return_value = signin_resp
+    return session
+
+
+def _signin_resp(location: str) -> MagicMock:
+    """A 302 signin response with the given Location header."""
+    resp = MagicMock(status_code=302)
+    resp.headers = {"location": location}
+    return resp
+
+
+# ── Brand constants and cipher selection ─────────────────────
+
+
+def test_kia_constants_set_correctly():
+    """Kia brand sets the correct CCI constants."""
+    api = _make_kia_api()
+    assert api.ONEAPP_CLIENT_ID == "01b36c86-79e8-486c-8009-15f2ad88d670"
+    assert api.ONEAPP_REDIRECT_URI == "https://oneapp.kia.com/redirect"
+    assert api.CCI_API_URL == "https://cci-api-eu.kia.com"
+    assert api.CCI_DOMAIN_API_URL == "https://cci-api-eu.kia.com/domain/api/"
+    assert api.CCI_PACKAGE_ID == "com.kia.oneapp.eu"
+    assert api.GSPA_BASE_URL == "https://gspa-ccs-eu.kia.com/"
+    assert api.LOGIN_FORM_HOST == "https://idpconnect-eu.kia.com"
+    assert api.REQUEST_ID_HEADER == "DD-REQUEST-ID"
+    assert api.DEVICE_ID_HEADER == "X-Userdevice-Id"
+    assert api._cci_client_name == "kia"
+    assert api.CCSP_API_URL == "https://gspa-ccs-eu.kia.com"
+
+
+def test_kia_cipher_is_kia_instance():
+    """Kia brand selects the kia cipher instance, not hyundai."""
+    api = _make_kia_api()
+    assert api.CIPHER_BRAND == "kia"
+    assert api._cipher is kia_cipher()
+
+
+# ── _login_with_password() happy path (stub — zero network) ──────────
+
+
+def test_kia_login_with_password_success():
+    """Kia CCI login flow returns access_token and refresh_token."""
+    api = _make_kia_api()
+    cci_token_resp = MagicMock(status_code=200)
+    cci_token_resp.json.return_value = {
+        "accessToken": "cci-access",
+        "refreshToken": "KCIREFRESHTOKEN1234567890123456789012345678901234567890",
+        "exchangeableAccessToken": "exch-at",
+        "exchangeableRefreshToken": "exch-rt",
+        "nonCcsToken": "nonccs",
+        "nonCcsRefreshToken": "nonccs-rt",
+        "idToken": "id-tok",
+        "expiresIn": 3599,
+    }
+    exchange_resp = MagicMock(status_code=200)
+    exchange_resp.json.return_value = {
+        "accessToken": "ccs-token",
+        "expiresTime": 86400,
+    }
+    with ExitStack() as stack:
+        stack.enter_context(
+            patch(
+                "hyundai_kia_connect_api.GspaApiEU.ApiImplSession",
+                return_value=_cci_session(
+                    _certs_response(),
+                    _signin_resp("https://example.com/cb?code=abc123"),
+                ),
+            )
+        )
+        for p in _mock_crypto():
+            stack.enter_context(p)
+        stack.enter_context(
+            patch(
+                "hyundai_kia_connect_api.GspaApiEU.requests.post",
+                side_effect=[cci_token_resp, exchange_resp],
+            )
+        )
+        info = api._login_with_password("user@kia.com", "password", "device-1")
+
+    assert info["access_token"] == "Bearer ccs-token"
+    assert (
+        info["refresh_token"]
+        == "KCIREFRESHTOKEN1234567890123456789012345678901234567890"
+    )
+    assert info["cci_access_token"] == "cci-access"
+    assert info["id_token"] == "id-tok"
+
+
+# ── Vehicle-parser stubs (until live fixture) ────────────────
+
+
+def test_kia_get_vehicles_not_implemented():
+    """get_vehicles raises until a live response fixture is captured."""
+    api = _make_kia_api()
+    with pytest.raises(NotImplementedError):
+        api.get_vehicles(MagicMock())
+
+
+def test_kia_update_cached_state_not_implemented():
+    """update_vehicle_with_cached_state raises until a live fixture exists."""
+    api = _make_kia_api()
+    with pytest.raises(NotImplementedError):
+        api.update_vehicle_with_cached_state(MagicMock(), MagicMock())
+
+
+# ── VehicleManager wiring ────────────────────────────────
+
+
+def test_vehicle_manager_routes_kia_to_kia_cci():
+    """VehicleManager.get_implementation_by_region_brand routes Kia EU CCI."""
+    from hyundai_kia_connect_api.VehicleManager import VehicleManager
+
+    # REGION_EUROPE_CCI = 9, BRAND_KIA = 1
+    api = VehicleManager.get_implementation_by_region_brand(9, 1, "en")
+    assert isinstance(api, KiaCciApiEU)
+
+
+def test_vehicle_manager_routes_genesis_to_error():
+    """Genesis EU CCI raises APIError."""
+    from hyundai_kia_connect_api.VehicleManager import VehicleManager
+
+    # REGION_EUROPE_CCI = 9, BRAND_GENESIS = 3
+    with pytest.raises(APIError, match="Genesis"):
+        VehicleManager.get_implementation_by_region_brand(9, 3, "en")
