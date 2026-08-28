@@ -11,8 +11,7 @@ handled in later PRs.
 
 import datetime as dt
 import logging
-
-import requests
+from typing import Any
 
 from .const import (
     DISTANCE_UNITS,
@@ -23,7 +22,7 @@ from .const import (
     TEMPERATURE_UNITS,
     PressureUnit,
 )
-from .exceptions import APIError, AuthenticationError
+from .exceptions import APIError
 from .GspaApiEU import GspaApiEU
 from .Token import Token
 from .utils import (
@@ -56,138 +55,14 @@ class HyundaiCciApiEU(GspaApiEU):
     CIPHER_BRAND = "hyundai"
     REQUEST_ID_HEADER = "X-Request-Id"
     DEVICE_ID_HEADER = "X-Device-Id"
-    # ------------------------------------------------------------------
-    # Vehicle list
-    # ------------------------------------------------------------------
-
-    def get_vehicles(self, token: Token) -> list[Vehicle]:
-        """Get the list of vehicles from CCI (cci-api-eu, no CCAPI fallback)."""
-        url = self.CCI_DOMAIN_API_URL + "v1/vehicle/available-vehicles?detail=true"
-        headers = self._get_cci_headers(
-            token.device_id or "",
-            cci_access_token=token.cci_access_token,
-            non_ccs_token=token.non_ccs_token,
-            exchangeable_token=token.exchangeable_token,
-        )
-        response = requests.get(url, headers=headers, timeout=(5, 30))
-        if response.status_code != 200:
-            raise APIError(
-                f"CCI get_vehicles failed: HTTP {response.status_code} — "
-                f"{response.text[:200]}"
-            )
-        data = response.json()
-        return self._parse_vehicles_from_cci(data)
-
-    def _parse_vehicles_from_cci(self, data: dict) -> list[Vehicle]:
-        vehicles: list[Vehicle] = []
-        vehicle_list = (
-            data
-            if isinstance(data, list)
-            else data.get("contents", data.get("vehicles", []))
-        )
-        if isinstance(vehicle_list, dict):
-            vehicle_list = [vehicle_list]
-
-        for entry in vehicle_list:
-            vehicle = Vehicle()
-            ccsp = entry.get("ccspVehicle", {})
-            vehicle.id = (
-                entry.get("ccspCarId")
-                or (ccsp.get("carId") if ccsp else None)
-                or entry.get("vehicleId", "")
-            )
-            vehicle.VIN = entry.get("vin", "")
-            vehicle.name = entry.get(
-                "vehicleNameView",
-                entry.get("nickname", entry.get("vehicleName", "")),
-            )
-            vehicle.model = entry.get("vehicleModelName", entry.get("modelName", ""))
-            vehicle.ccu_ccs2_protocol_support = entry.get(
-                "ccs2ProtocolSupport", entry.get("ccu_ccs2_protocol_support", 0)
-            )
-            if not vehicle.ccu_ccs2_protocol_support:
-                is_ccs = entry.get("isCcs", False)
-                is_ccs_open = entry.get("isCcsOpen", False)
-                if is_ccs and is_ccs_open:
-                    vehicle.ccu_ccs2_protocol_support = 2
-
-            car_type = (ccsp.get("carType") if ccsp else "") or ""
-            is_ev = entry.get("isEv", False)
-            fuel_type = entry.get("fuelType", entry.get("engineFuelCode", ""))
-            if is_ev or fuel_type == "EV" or car_type in ("EV", "ELEC"):
-                vehicle.engine_type = ENGINE_TYPES.EV
-            elif fuel_type in ("PHEV", "HEV+PHEV") or car_type in ("PHEV",):
-                vehicle.engine_type = ENGINE_TYPES.PHEV
-            elif fuel_type == "HEV" or car_type in ("HEV", "HV"):
-                vehicle.engine_type = ENGINE_TYPES.HEV
-            else:
-                vehicle.engine_type = ENGINE_TYPES.ICE
-
-            vehicle.vehicle_default_image_url = entry.get(
-                "vehicleDefaultImageUrl", entry.get("vehicleImageUrl")
-            )
-            vehicle.web_manual_url = entry.get("webManualURL")
-            vehicle.color_code = entry.get("colorCode")
-            vehicle.banner_image_url = entry.get(
-                "bannerImageUrl", entry.get("vehicleOuterImageUrl")
-            )
-            vehicle.model_config_data_url = entry.get("modelConfigDataUrl")
-            vehicle._cci_vehicle_data = entry
-
-            vehicles.append(vehicle)
-
-        return vehicles
-
-    # ------------------------------------------------------------------
-    # Force refresh
-    # ------------------------------------------------------------------
-
-    def force_refresh_vehicle_state(self, token: Token, vehicle: Vehicle) -> None:
-        """Wake the vehicle and re-read GSPA stored-status.
-
-        Prewakeup is best-effort (car may be offline). The status read
-        returns the last cached state regardless.
-        """
-        self._validate_ccs_token(token)
-        try:
-            self.prewakeup(token, vehicle)
-        except Exception:
-            _LOGGER.debug(f"{DOMAIN} - prewakeup failed (car may be offline)")
-        self.update_vehicle_with_cached_state(token, vehicle)
-
-    def prewakeup(self, token: Token, vehicle: Vehicle) -> dict | None:
-        """Send a prewakeup command to bring the vehicle online."""
-        car_id = vehicle.id
-        url = self.CCSP_API_URL + f"/gspa/v1/remote/vehicles/{car_id}/prewakeup"
-        self._validate_ccs_token(token)
-        headers = self._get_authenticated_headers(
-            token, vehicle.ccu_ccs2_protocol_support or 0
-        )
-        try:
-            response = requests.post(url, headers=headers, timeout=(5, 60))
-            if response.status_code == 401:
-                raise AuthenticationError("GSPA: Token expired or invalid")
-            if response.status_code >= 400:
-                raise APIError(
-                    f"GSPA control error: HTTP {response.status_code} - "
-                    f"{response.text[:200]}"
-                )
-            data = response.json()
-            rc = data.get("rc")
-            if rc and rc != "0000":
-                raise APIError(f"GSPA error: rc={rc}, msg={data.get('msg', '')}")
-            return data.get("rs", data)
-        except AuthenticationError:
-            raise
-        except Exception:
-            _LOGGER.debug(f"{DOMAIN} - GSPA prewakeup failed")
-            return None
 
     # ------------------------------------------------------------------
     # Driving info + history (GSPA, read-only)
     # ------------------------------------------------------------------
 
-    def _get_driving_info(self, token: Token, vehicle: Vehicle) -> dict | None:
+    def _get_driving_info(
+        self, token: Token, vehicle: Vehicle
+    ) -> dict[str, Any] | None:
         """Fetch driving info from GSPA driving-info endpoint."""
         self._validate_ccs_token(token)
         try:
@@ -196,7 +71,9 @@ class HyundaiCciApiEU(GspaApiEU):
             _LOGGER.debug(f"{DOMAIN} - GSPA driving-info failed")
             return None
 
-    def _update_vehicle_drive_info(self, vehicle: Vehicle, state: dict) -> None:
+    def _update_vehicle_drive_info(
+        self, vehicle: Vehicle, state: dict[str, Any]
+    ) -> None:
         if isinstance(state, dict):
             driving_info = state.get("drivingInfo", state)
             if driving_info is None:
@@ -214,7 +91,9 @@ class HyundaiCciApiEU(GspaApiEU):
             if total_regen is not None:
                 vehicle.total_power_regenerated = float(total_regen)
 
-    def _get_driving_history(self, token: Token, vehicle: Vehicle) -> dict | None:
+    def _get_driving_history(
+        self, token: Token, vehicle: Vehicle
+    ) -> dict[str, Any] | None:
         """Fetch 30-day driving history from GSPA driving-history endpoint."""
         self._validate_ccs_token(token)
         try:
@@ -223,7 +102,9 @@ class HyundaiCciApiEU(GspaApiEU):
             _LOGGER.debug(f"{DOMAIN} - GSPA driving-history failed")
             return None
 
-    def _update_vehicle_driving_history(self, vehicle: Vehicle, state: dict) -> None:
+    def _update_vehicle_driving_history(
+        self, vehicle: Vehicle, state: dict[str, Any]
+    ) -> None:
         """Parse 30-day driving history into power_consumption_30d and daily_stats."""
         # Filter for the summary period (drivingPeriod == 0) which contains
         # total power consumption and calculative odometer.
@@ -279,7 +160,7 @@ class HyundaiCciApiEU(GspaApiEU):
     # DTC breakdowns (GSPA, read-only)
     # ------------------------------------------------------------------
 
-    def get_breakdowns(self, token: Token, vehicle: Vehicle) -> dict | None:
+    def get_breakdowns(self, token: Token, vehicle: Vehicle) -> dict[str, Any] | None:
         """Get vehicle diagnostic trouble codes (DTCs) from GSPA."""
         self._validate_ccs_token(token)
         try:
@@ -290,7 +171,7 @@ class HyundaiCciApiEU(GspaApiEU):
             _LOGGER.debug(f"{DOMAIN} - GSPA breakdowns failed")
             return None
 
-    def _parse_breakdowns(self, vehicle: Vehicle, data: dict) -> None:
+    def _parse_breakdowns(self, vehicle: Vehicle, data: dict[str, Any]) -> None:
         """Parse DTC data from GSPA breakdown response.
 
         Response structure:
@@ -315,7 +196,9 @@ class HyundaiCciApiEU(GspaApiEU):
     # CCS2 vehicle property mapping
     # ------------------------------------------------------------------
 
-    def _update_vehicle_properties_ccs2(self, vehicle: Vehicle, state: dict) -> None:
+    def _update_vehicle_properties_ccs2(
+        self, vehicle: Vehicle, state: dict[str, Any]
+    ) -> None:
         if get_child_value(state, "Offset"):
             offset = float(get_child_value(state, "Offset"))
             hours = int(offset)

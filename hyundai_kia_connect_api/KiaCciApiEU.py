@@ -1,11 +1,13 @@
 """KiaCciApiEU.py — Kia EU CCI/GSPA API.
 
-Kia-specific EU implementation inheriting the OneApp (CCI) login flow
-and the GSPA secure-request layer from ``GspaApiEU``. This module keeps
-Kia brand constants; vehicle listing and cached-state parsing require a
-live response fixture (captured during integration validation) and
-raise NotImplementedError until then. Extended reads (driving info,
-history, breakdowns, DTC) inherit NotImplementedError from ApiImpl.
+Kia-specific EU implementation inheriting the OneApp (CCI) login flow,
+vehicle listing, force refresh / prewakeup, and the GSPA secure-request
+layer from ``GspaApiEU``. This module keeps Kia brand constants.
+Cached-state parsing requires a live response fixture (captured during
+integration validation) and raises NotImplementedError until then.
+Extended reads (driving info, history, breakdowns, DTC) inherit
+NotImplementedError from ApiImpl until live fixtures confirm their
+parsers.
 """
 
 # pylint:disable=missing-class-docstring,invalid-name
@@ -33,22 +35,6 @@ class KiaCciApiEU(GspaApiEU):
     CIPHER_BRAND = "kia"
     REQUEST_ID_HEADER = "DD-REQUEST-ID"
     DEVICE_ID_HEADER = "X-Userdevice-Id"
-
-    # ------------------------------------------------------------------
-    # Vehicle list
-    # ------------------------------------------------------------------
-
-    def get_vehicles(self, token: Token) -> list[Vehicle]:
-        """Fetch vehicle list from the Kia CCI profile endpoint.
-
-        The Kia response parser requires a live response fixture, which
-        is captured during integration validation on a real vehicle.
-        Until that fixture exists, this method raises.
-        """
-        raise NotImplementedError(
-            "Kia vehicle parser requires a live response fixture "
-            "(captured during integration validation)."
-        )
 
     def update_vehicle_with_cached_state(self, token: Token, vehicle: Vehicle) -> None:
         """Update the vehicle with the cached stored-status state.

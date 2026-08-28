@@ -17,6 +17,7 @@ import json
 import logging
 import re
 import uuid
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import requests
@@ -24,7 +25,7 @@ from Crypto.Cipher import PKCS1_v1_5
 from Crypto.PublicKey import RSA
 
 from .ApiImpl import ApiImpl, ApiImplSession
-from .const import BRANDS, DOMAIN
+from .const import BRANDS, DOMAIN, ENGINE_TYPES
 from .exceptions import APIError, AuthenticationError, ConsentRequiredError
 from .gspa import create_tsid
 from .Token import Token
@@ -155,7 +156,7 @@ class GspaApiEU(ApiImpl):
 
     def _login_with_password(
         self, username: str, password: str, device_id: str
-    ) -> dict:
+    ) -> dict[str, Any]:
         """CCI password login (OneApp client_id, bypasses IDPConnect WAF).
 
         Confirmed endpoints:
@@ -286,7 +287,7 @@ class GspaApiEU(ApiImpl):
 
     def _exchange_auth_code_for_cci_tokens(
         self, device_id: str, auth_code: str
-    ) -> dict:
+    ) -> dict[str, Any]:
         """POST auth code to CCI v1/auth/token (code in URL query, empty body)."""
         headers = self._get_cci_headers(device_id)
         resp = requests.post(
@@ -300,7 +301,8 @@ class GspaApiEU(ApiImpl):
                 f"CCI token exchange failed: HTTP {resp.status_code} — "
                 f"{resp.text[:200]}. This may indicate a Hyundai API change."
             )
-        return resp.json()
+        payload: dict[str, Any] = resp.json()
+        return payload
 
     # ------------------------------------------------------------------
     # CCI headers
@@ -319,7 +321,7 @@ class GspaApiEU(ApiImpl):
         non_ccs_token: str | None = None,
         exchangeable_token: str | None = None,
         content_type: str | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Headers for the CCI API."""
         headers = {
             "client-id": self.CCI_PACKAGE_ID,
@@ -349,6 +351,138 @@ class GspaApiEU(ApiImpl):
         else:
             headers["Content-Length"] = "0"
         return headers
+
+    # ------------------------------------------------------------------
+    # Force refresh
+    # ------------------------------------------------------------------
+
+    def force_refresh_vehicle_state(self, token: Token, vehicle: Vehicle) -> None:
+        """Wake the vehicle and re-read GSPA stored-status.
+
+        Prewakeup is best-effort (car may be offline). The status read
+        returns the last cached state regardless.
+        """
+        self._validate_ccs_token(token)
+        try:
+            self.prewakeup(token, vehicle)
+        except Exception:
+            _LOGGER.debug(f"{DOMAIN} - prewakeup failed (car may be offline)")
+        self.update_vehicle_with_cached_state(token, vehicle)
+
+    def prewakeup(self, token: Token, vehicle: Vehicle) -> dict[str, Any] | None:
+        """Send a prewakeup command to bring the vehicle online.
+
+        GSPA remote paths are brand-global; both EU CCI subclasses use
+        the same endpoint.
+        """
+        car_id = vehicle.id
+        url = self.CCSP_API_URL + f"/gspa/v1/remote/vehicles/{car_id}/prewakeup"
+        self._validate_ccs_token(token)
+        headers = self._get_authenticated_headers(
+            token, vehicle.ccu_ccs2_protocol_support or 0
+        )
+        try:
+            response = requests.post(url, headers=headers, timeout=(5, 60))
+            if response.status_code == 401:
+                raise AuthenticationError("GSPA: Token expired or invalid")
+            if response.status_code >= 400:
+                raise APIError(
+                    f"GSPA control error: HTTP {response.status_code} - "
+                    f"{response.text[:200]}"
+                )
+            data: dict[str, Any] = response.json()
+            rc = data.get("rc")
+            if rc and rc != "0000":
+                raise APIError(f"GSPA error: rc={rc}, msg={data.get('msg', '')}")
+            rs: dict[str, Any] = data.get("rs", data)
+            return rs
+        except AuthenticationError:
+            raise
+        except Exception:
+            _LOGGER.debug(f"{DOMAIN} - GSPA prewakeup failed")
+            return None
+
+    # ------------------------------------------------------------------
+    # Vehicle list
+    # ------------------------------------------------------------------
+
+    def get_vehicles(self, token: Token) -> list[Vehicle]:
+        """Get the list of vehicles from CCI (cci-api-eu, no CCAPI fallback).
+
+        Both brands use the same available-vehicles endpoint shape
+        (ccspCarId / ccspVehicle.carId envelope), so the fetch and parser
+        are shared.
+        """
+        url = self.CCI_DOMAIN_API_URL + "v1/vehicle/available-vehicles?detail=true"
+        headers = self._get_cci_headers(
+            token.device_id or "",
+            cci_access_token=token.cci_access_token,
+            non_ccs_token=token.non_ccs_token,
+            exchangeable_token=token.exchangeable_token,
+        )
+        response = requests.get(url, headers=headers, timeout=(5, 30))
+        if response.status_code != 200:
+            raise APIError(
+                f"CCI get_vehicles failed: HTTP {response.status_code} — "
+                f"{response.text[:200]}"
+            )
+        data = response.json()
+        return self._parse_vehicles_from_cci(data)
+
+    def _parse_vehicles_from_cci(self, data: dict[str, Any]) -> list[Vehicle]:
+        vehicles: list[Vehicle] = []
+        vehicle_list = (
+            data
+            if isinstance(data, list)
+            else data.get("contents", data.get("vehicles", []))
+        )
+        if isinstance(vehicle_list, dict):
+            vehicle_list = [vehicle_list]
+
+        for entry in vehicle_list:
+            ccsp = entry.get("ccspVehicle", {})
+            vehicle_id = (
+                entry.get("ccspCarId")
+                or (ccsp.get("carId") if ccsp else None)
+                or entry.get("vehicleId", "")
+            )
+            ccs2_support = entry.get(
+                "ccs2ProtocolSupport", entry.get("ccu_ccs2_protocol_support", 0)
+            )
+            if not ccs2_support:
+                is_ccs = entry.get("isCcs", False)
+                is_ccs_open = entry.get("isCcsOpen", False)
+                if is_ccs and is_ccs_open:
+                    ccs2_support = 2
+
+            car_type = (ccsp.get("carType") if ccsp else "") or ""
+            is_ev = entry.get("isEv", False)
+            fuel_type = entry.get("fuelType", entry.get("engineFuelCode", ""))
+            if is_ev or fuel_type == "EV" or car_type in ("EV", "ELEC"):
+                entry_engine_type = ENGINE_TYPES.EV
+            elif fuel_type in ("PHEV", "HEV+PHEV") or car_type in ("PHEV",):
+                entry_engine_type = ENGINE_TYPES.PHEV
+            elif fuel_type == "HEV" or car_type in ("HEV", "HV"):
+                entry_engine_type = ENGINE_TYPES.HEV
+            else:
+                entry_engine_type = ENGINE_TYPES.ICE
+
+            vehicles.append(
+                Vehicle(
+                    id=vehicle_id,
+                    name=entry.get(
+                        "vehicleNameView",
+                        entry.get("nickname", entry.get("vehicleName", "")),
+                    ),
+                    model=entry.get("vehicleModelName", entry.get("modelName", "")),
+                    VIN=entry.get("vin", ""),
+                    timezone=self.data_timezone,
+                    engine_type=entry_engine_type,
+                    ccu_ccs2_protocol_support=ccs2_support,
+                )
+            )
+
+        return vehicles
 
     # ------------------------------------------------------------------
     # CCS token exchange
@@ -484,7 +618,8 @@ class GspaApiEU(ApiImpl):
             payload_b64 += "=" * (4 - len(payload_b64) % 4)
             payload_bytes = base64.b64decode(payload_b64)
             payload = json.loads(payload_bytes)
-            return payload.get(claim)
+            value = payload.get(claim)
+            return value if isinstance(value, str) else None
         except Exception:
             return None
 
@@ -601,7 +736,7 @@ class GspaApiEU(ApiImpl):
         )
         try:
             response = requests.get(url, headers=headers, timeout=(5, 30))
-            return response.status_code == 200
+            return bool(response.status_code == 200)
         except Exception:
             _LOGGER.debug(f"{DOMAIN} - CCS token freshness check failed")
             return False
@@ -639,7 +774,9 @@ class GspaApiEU(ApiImpl):
     # GSPA authenticated headers
     # ------------------------------------------------------------------
 
-    def _get_authenticated_headers(self, token: Token, ccs2_support: int = 0) -> dict:
+    def _get_authenticated_headers(
+        self, token: Token, ccs2_support: int = 0
+    ) -> dict[str, Any]:
         """Headers for GSPA REST endpoints (gspa-ccs-eu.hyundai.com)."""
         ccs_token = (token.access_token or "").removeprefix("Bearer ")
         headers = {
@@ -690,8 +827,8 @@ class GspaApiEU(ApiImpl):
         token: Token,
         vehicle: Vehicle,
         endpoint: str,
-        params: dict | None = None,
-    ) -> dict | None:
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
         """GET from a GSPA endpoint (X-Stamp gated).
 
         GSPA endpoints use the CCSP host + /gspa/v1/ prefix.
@@ -710,13 +847,11 @@ class GspaApiEU(ApiImpl):
             raise AuthenticationError("GSPA: Token expired or invalid")
         if response.status_code >= 400:
             raise APIError(f"GSPA error: HTTP {response.status_code}")
-        data = response.json()
-        meta = data.get("metaInfo", {})
+        data: dict[str, Any] = response.json()
+        meta: dict[str, Any] = data.get("metaInfo", {})
         ret_code = meta.get("retCode")
         res_code = meta.get("resCode", "")
 
-        if response.status_code == 401:
-            raise AuthenticationError("CCSP: Token expired or invalid")
         if response.status_code == 403:
             raise APIError(f"GSPA auth error: {res_code} {meta.get('message', '')}")
 
@@ -726,13 +861,16 @@ class GspaApiEU(ApiImpl):
             )
             return None
 
-        return data.get("data")
+        payload: dict[str, Any] | None = data.get("data")
+        return payload
 
     # ------------------------------------------------------------------
     # GSPA stored-status
     # ------------------------------------------------------------------
 
-    def get_stored_status(self, token: Token, vehicle: Vehicle) -> dict | None:
+    def get_stored_status(
+        self, token: Token, vehicle: Vehicle
+    ) -> dict[str, Any] | None:
         """Get cached vehicle status from GSPA stored-status endpoint.
 
         Returns the data dict from the GSPA response, or None on failure.

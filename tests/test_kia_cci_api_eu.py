@@ -1,5 +1,6 @@
-"""Tests for KiaCciApiEU — brand constants, cipher selection, the login stub
-flow, and the NotImplementedError vehicle-parser stubs (zero network)."""
+"""Tests for KiaCciApiEU — brand constants, cipher selection, the login
+stub flow, the shared get_vehicles path, and the NotImplementedError
+cached-state parser stub (zero network)."""
 
 from contextlib import ExitStack
 from unittest.mock import MagicMock, patch
@@ -141,14 +142,41 @@ def test_kia_login_with_password_success():
     assert info["id_token"] == "id-tok"
 
 
-# ── Vehicle-parser stubs (until live fixture) ────────────────
+# ── Vehicle list (shared with Hyundai — same CCI envelope) ────────
 
 
-def test_kia_get_vehicles_not_implemented():
-    """get_vehicles raises until a live response fixture is captured."""
+def test_kia_get_vehicles_shared_path():
+    """Kia get_vehicles hits the Kia CCI domain and parses the shared
+    ccspCarId/ccspVehicle envelope (inherited from GspaApiEU)."""
     api = _make_kia_api()
-    with pytest.raises(NotImplementedError):
-        api.get_vehicles(MagicMock())
+    token = MagicMock(device_id="dev-1", cci_access_token="cci-tok")
+    token.non_ccs_token = "nonccs"
+    token.exchangeable_token = "exch"
+    resp = MagicMock(status_code=200)
+    resp.json.return_value = {
+        "contents": [
+            {
+                "ccspCarId": "car-123",
+                "vin": "KNAB25120R0123456",
+                "vehicleNameView": "Kia EV3",
+                "vehicleModelName": "EV3",
+                "isEv": True,
+            }
+        ]
+    }
+    with patch(
+        "hyundai_kia_connect_api.GspaApiEU.requests.get", return_value=resp
+    ) as g:
+        vehicles = api.get_vehicles(token)
+
+    assert g.call_args[0][0] == (
+        "https://cci-api-eu.kia.com/domain/api/v1/vehicle/available-vehicles?detail=true"
+    )
+    assert len(vehicles) == 1
+    assert vehicles[0].id == "car-123"
+    assert vehicles[0].VIN == "KNAB25120R0123456"
+    assert vehicles[0].name == "Kia EV3"
+    assert vehicles[0].model == "EV3"
 
 
 def test_kia_update_cached_state_not_implemented():
