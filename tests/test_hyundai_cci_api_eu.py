@@ -3,6 +3,7 @@ _get_stamp(), and _fetch_user_id()."""
 
 import datetime as dt
 from contextlib import ExitStack
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -11,6 +12,7 @@ from hyundai_kia_connect_api.const import DISTANCE_UNITS, ENGINE_TYPES
 from hyundai_kia_connect_api.exceptions import (
     AuthenticationError,
 )
+from hyundai_kia_connect_api.gspa.cipher_keys import compute_x_stamp
 from hyundai_kia_connect_api.HyundaiCciApiEU import HyundaiCciApiEU
 from hyundai_kia_connect_api.Token import Token
 from hyundai_kia_connect_api.Vehicle import Vehicle
@@ -443,14 +445,39 @@ def test_get_stamp_returns_valid_stamp():
     base64.b64decode(stamp + "==")  # should not raise
 
 
-def test_get_stamp_uses_user_id():
-    """_get_stamp uses token.user_id as the user_id in the X-Stamp payload."""
+def test_get_stamp_uses_user_id(monkeypatch):
+    """_get_stamp propagates token.user_id into the X-Stamp payload.
+
+    The stamp payload is encrypted, so verification is bit-exact: with
+    pinned tsid/epoch, a different user_id yields a different stamp, and
+    the stamp matches the reference compute_x_stamp(region=1, ...) for
+    identical inputs.
+    """
     api = _make_hyundai_api()
-    token = _make_token(user_id="my-test-uid")
-    # compute_x_stamp is imported inside _get_stamp from .gspa, so we patch
-    # it at the source module rather than at HyundaiCciApiEU level.
-    stamp, _tsid = api._get_stamp(token)
-    assert stamp is not None
+    pinned_tsid = "pinned-tsid-value"
+    pinned_time = dt.datetime(2025, 6, 1, 12, 0, 0, tzinfo=dt.UTC)
+
+    class _FakeDateTime:
+        @staticmethod
+        def now(tz=None):
+            return pinned_time
+
+    monkeypatch.setattr(
+        "hyundai_kia_connect_api.GspaApiEU.create_tsid", lambda device_id: pinned_tsid
+    )
+    monkeypatch.setattr(
+        "hyundai_kia_connect_api.GspaApiEU.dt",
+        SimpleNamespace(datetime=_FakeDateTime, UTC=dt.UTC),
+    )
+    epoch_seconds = int(pinned_time.timestamp())
+
+    stamp_uid, _ = api._get_stamp(_make_token(user_id="my-test-uid"))
+    stamp_empty, _ = api._get_stamp(_make_token(user_id=""))
+
+    assert stamp_uid != stamp_empty
+    assert stamp_uid == compute_x_stamp(
+        region=1, tsid=pinned_tsid, epoch_seconds=epoch_seconds, user_id="my-test-uid"
+    )
 
 
 # ── _fetch_user_id() JWT extraction ────────────────────
@@ -655,3 +682,29 @@ def test_update_vehicle_with_cached_state_populates_vehicle():
     assert vehicle.odometer_unit == DISTANCE_UNITS[1]
     assert vehicle.car_battery_percentage == 85
     assert vehicle.ev_battery_percentage == 78
+
+
+# ── smart_key_battery_warning_is_on (FOB.LowBattery) ───────────
+
+
+@pytest.mark.parametrize(
+    ("low_battery", "expected"),
+    [
+        (None, None),
+        (0, False),
+        (False, False),
+        (1, True),
+        (True, True),
+    ],
+)
+def test_fob_low_battery_bool_or_none(low_battery, expected):
+    """Electronics.FOB.LowBattery uses bool_or_none: an absent/unset
+    value maps to None (unknown), not False (C3 review finding)."""
+    api = _make_hyundai_api()
+    vehicle = Vehicle()
+    state = {
+        "Drivetrain": {"FuelSystem": {"DTE": {"Unit": 1}}},
+        "Electronics": {"FOB": {"LowBattery": low_battery}},
+    }
+    api._update_vehicle_properties_ccs2(vehicle, state)
+    assert vehicle.smart_key_battery_warning_is_on is expected

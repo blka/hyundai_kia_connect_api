@@ -77,6 +77,12 @@ class GspaApiEU(ApiImpl):
     DEVICE_ID_HEADER: str = ""
     CCSP_SERVICE_ID: str = "6d477c38-3ca4-4cf3-9557-2a1929a94654"
 
+    # Library region id (REGIONS enum, e.g. 9 = Europe CCI) is a DIFFERENT
+    # namespace from the stamp-region code the SDK cipher expects. EU CCI
+    # stamps are computed with the EU stamp region (1), matching the
+    # live-verified pre-rework mapping (region 9 -> EU IV).
+    STAMP_REGION = 1
+
     @property
     def CCI_DOMAIN_API_URL(self) -> str:
         return self.CCI_API_URL + "/domain/api/"
@@ -192,7 +198,7 @@ class GspaApiEU(ApiImpl):
         if resp.status_code != 200:
             raise AuthenticationError(
                 f"API error: failed to fetch RSA certs: HTTP {resp.status_code}. "
-                "This may indicate a Hyundai API change."
+                "This may indicate an API change."
             )
         jwk = resp.json().get("retValue", {})
         kid = jwk.get("kid", "")
@@ -299,7 +305,7 @@ class GspaApiEU(ApiImpl):
         if resp.status_code != 200:
             raise AuthenticationError(
                 f"CCI token exchange failed: HTTP {resp.status_code} — "
-                f"{resp.text[:200]}. This may indicate a Hyundai API change."
+                f"{resp.text[:200]}. This may indicate an API change."
             )
         payload: dict[str, Any] = resp.json()
         return payload
@@ -351,56 +357,6 @@ class GspaApiEU(ApiImpl):
         else:
             headers["Content-Length"] = "0"
         return headers
-
-    # ------------------------------------------------------------------
-    # Force refresh
-    # ------------------------------------------------------------------
-
-    def force_refresh_vehicle_state(self, token: Token, vehicle: Vehicle) -> None:
-        """Wake the vehicle and re-read GSPA stored-status.
-
-        Prewakeup is best-effort (car may be offline). The status read
-        returns the last cached state regardless.
-        """
-        self._validate_ccs_token(token)
-        try:
-            self.prewakeup(token, vehicle)
-        except Exception:
-            _LOGGER.debug(f"{DOMAIN} - prewakeup failed (car may be offline)")
-        self.update_vehicle_with_cached_state(token, vehicle)
-
-    def prewakeup(self, token: Token, vehicle: Vehicle) -> dict[str, Any] | None:
-        """Send a prewakeup command to bring the vehicle online.
-
-        GSPA remote paths are brand-global; both EU CCI subclasses use
-        the same endpoint.
-        """
-        car_id = vehicle.id
-        url = self.CCSP_API_URL + f"/gspa/v1/remote/vehicles/{car_id}/prewakeup"
-        self._validate_ccs_token(token)
-        headers = self._get_authenticated_headers(
-            token, vehicle.ccu_ccs2_protocol_support or 0
-        )
-        try:
-            response = requests.post(url, headers=headers, timeout=(5, 60))
-            if response.status_code == 401:
-                raise AuthenticationError("GSPA: Token expired or invalid")
-            if response.status_code >= 400:
-                raise APIError(
-                    f"GSPA control error: HTTP {response.status_code} - "
-                    f"{response.text[:200]}"
-                )
-            data: dict[str, Any] = response.json()
-            rc = data.get("rc")
-            if rc and rc != "0000":
-                raise APIError(f"GSPA error: rc={rc}, msg={data.get('msg', '')}")
-            rs: dict[str, Any] = data.get("rs", data)
-            return rs
-        except AuthenticationError:
-            raise
-        except Exception:
-            _LOGGER.debug(f"{DOMAIN} - GSPA prewakeup failed")
-            return None
 
     # ------------------------------------------------------------------
     # Vehicle list
@@ -515,7 +471,7 @@ class GspaApiEU(ApiImpl):
         if resp.status_code != 200:
             raise AuthenticationError(
                 f"CCS token exchange failed: HTTP {resp.status_code} — "
-                f"{resp.text[:200]}. This may indicate a Hyundai API change."
+                f"{resp.text[:200]}. This may indicate an API change."
             )
         data = resp.json()
         ccs_token = data.get("accessToken") or data.get("ccsAccessToken") or ""
@@ -751,7 +707,7 @@ class GspaApiEU(ApiImpl):
         Returns (stamp, tsid) — both must be sent as X-Stamp + X-Request-Id
         headers. The server validates the stamp against the tsid.
 
-        Returns (None, None) if computation fails.
+        Raises APIError if computation fails.
         """
         try:
             device_id = (token.device_id or "").replace("-", "")
@@ -759,7 +715,7 @@ class GspaApiEU(ApiImpl):
             epoch_seconds = int(dt.datetime.now(dt.UTC).timestamp())
             user_id = token.user_id or ""
             stamp = self._cipher.compute_x_stamp(
-                region=self.region,
+                region=self.STAMP_REGION,
                 tsid=tsid,
                 epoch_seconds=epoch_seconds,
                 user_id=user_id,
@@ -777,7 +733,7 @@ class GspaApiEU(ApiImpl):
     def _get_authenticated_headers(
         self, token: Token, ccs2_support: int = 0
     ) -> dict[str, Any]:
-        """Headers for GSPA REST endpoints (gspa-ccs-eu.hyundai.com)."""
+        """Headers for GSPA REST endpoints on the brand GSPA host."""
         ccs_token = (token.access_token or "").removeprefix("Bearer ")
         headers = {
             "Authorization": f"Bearer {ccs_token}",
@@ -796,9 +752,8 @@ class GspaApiEU(ApiImpl):
             "User-Agent": USER_AGENT_OK_HTTP,
         }
         stamp, tsid = self._get_stamp(token)
-        if stamp and tsid:
-            headers["X-Stamp"] = stamp
-            headers[self.REQUEST_ID_HEADER] = tsid
+        headers["X-Stamp"] = stamp
+        headers[self.REQUEST_ID_HEADER] = tsid
         return headers
 
     def _validate_ccs_token(self, token: Token) -> None:
@@ -845,15 +800,22 @@ class GspaApiEU(ApiImpl):
         response = requests.get(url, headers=headers, params=params, timeout=(5, 30))
         if response.status_code == 401:
             raise AuthenticationError("GSPA: Token expired or invalid")
-        if response.status_code >= 400:
-            raise APIError(f"GSPA error: HTTP {response.status_code}")
-        data: dict[str, Any] = response.json()
+        try:
+            data: dict[str, Any] = response.json()
+        except ValueError:
+            raise APIError(
+                f"GSPA error: HTTP {response.status_code} "
+                f"non-JSON body: {response.text[:200]!r}"
+            )
         meta: dict[str, Any] = data.get("metaInfo", {})
-        ret_code = meta.get("retCode")
         res_code = meta.get("resCode", "")
 
         if response.status_code == 403:
             raise APIError(f"GSPA auth error: {res_code} {meta.get('message', '')}")
+        if response.status_code >= 400:
+            raise APIError(f"GSPA error: HTTP {response.status_code} {res_code}")
+
+        ret_code = meta.get("retCode")
 
         if ret_code != "S":
             _LOGGER.debug(

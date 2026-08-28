@@ -13,6 +13,8 @@ import datetime as dt
 import logging
 from typing import Any
 
+import requests
+
 from .const import (
     DISTANCE_UNITS,
     DOMAIN,
@@ -22,7 +24,7 @@ from .const import (
     TEMPERATURE_UNITS,
     PressureUnit,
 )
-from .exceptions import APIError
+from .exceptions import APIError, AuthenticationError
 from .GspaApiEU import GspaApiEU
 from .Token import Token
 from .utils import (
@@ -42,7 +44,9 @@ class HyundaiCciApiEU(GspaApiEU):
 
     Uses the CCI login flow (OneApp client_id 4f4953b5) confirmed on
     production endpoints. Login, token lifecycle, and the GSPA
-    secure-request layer are inherited from ``GspaApiEU``.
+    secure-request layer are inherited from ``GspaApiEU``. Force refresh
+    (prewakeup + stored-status re-read) lives here: Kia EU CCI remote
+    actions await live verification.
     """
 
     # Brand constants (Hyundai OneApp EU, confirmed on production endpoints).
@@ -633,7 +637,7 @@ class HyundaiCciApiEU(GspaApiEU):
         vehicle.air_control_is_on = get_child_value(
             state, "Cabin.HVAC.Row1.Driver.Blower.SpeedLevel"
         )
-        vehicle.smart_key_battery_warning_is_on = bool(
+        vehicle.smart_key_battery_warning_is_on = bool_or_none(
             get_child_value(state, "Electronics.FOB.LowBattery")
         )
 
@@ -761,6 +765,56 @@ class HyundaiCciApiEU(GspaApiEU):
         vehicle.data = state
 
     # ------------------------------------------------------------------
+    # Force refresh
+    # ------------------------------------------------------------------
+
+    def force_refresh_vehicle_state(self, token: Token, vehicle: Vehicle) -> None:
+        """Wake the vehicle and re-read GSPA stored-status.
+
+        Prewakeup is best-effort (car may be offline). The status read
+        returns the last cached state regardless.
+        """
+        self._validate_ccs_token(token)
+        try:
+            self.prewakeup(token, vehicle)
+        except Exception:
+            _LOGGER.debug(f"{DOMAIN} - prewakeup failed (car may be offline)")
+        self.update_vehicle_with_cached_state(token, vehicle)
+
+    def prewakeup(self, token: Token, vehicle: Vehicle) -> dict[str, Any] | None:
+        """Send a prewakeup command to bring the vehicle online.
+
+        GSPA remote paths are brand-global (the path is shared across EU
+        CCI brands, issued on the instance's CCSP host).
+        """
+        car_id = vehicle.id
+        url = self.CCSP_API_URL + f"/gspa/v1/remote/vehicles/{car_id}/prewakeup"
+        self._validate_ccs_token(token)
+        headers = self._get_authenticated_headers(
+            token, vehicle.ccu_ccs2_protocol_support or 0
+        )
+        try:
+            response = requests.post(url, headers=headers, timeout=(5, 60))
+            if response.status_code == 401:
+                raise AuthenticationError("GSPA: Token expired or invalid")
+            if response.status_code >= 400:
+                raise APIError(
+                    f"GSPA control error: HTTP {response.status_code} - "
+                    f"{response.text[:200]}"
+                )
+            data: dict[str, Any] = response.json()
+            rc = data.get("rc")
+            if rc and rc != "0000":
+                raise APIError(f"GSPA error: rc={rc}, msg={data.get('msg', '')}")
+            rs: dict[str, Any] = data.get("rs", data)
+            return rs
+        except AuthenticationError:
+            raise
+        except Exception:
+            _LOGGER.debug(f"{DOMAIN} - GSPA prewakeup failed")
+            return None
+
+    # ------------------------------------------------------------------
     # Update vehicle with cached state
     # ------------------------------------------------------------------
 
@@ -783,7 +837,6 @@ class HyundaiCciApiEU(GspaApiEU):
         if isinstance(state, dict) and "Vehicle" in state:
             state = state["Vehicle"]
         self._update_vehicle_properties_ccs2(vehicle, state)
-        vehicle.data = state
 
         if vehicle.engine_type in (ENGINE_TYPES.EV, ENGINE_TYPES.PHEV):
             try:

@@ -1,16 +1,20 @@
 """KiaCciApiEU.py — Kia EU CCI/GSPA API.
 
 Kia-specific EU implementation inheriting the OneApp (CCI) login flow,
-vehicle listing, force refresh / prewakeup, and the GSPA secure-request
-layer from ``GspaApiEU``. This module keeps Kia brand constants.
-Cached-state parsing requires a live response fixture (captured during
-integration validation) and raises NotImplementedError until then.
-Extended reads (driving info, history, breakdowns, DTC) inherit
-NotImplementedError from ApiImpl until live fixtures confirm their
-parsers.
+vehicle listing, and the GSPA secure-request layer from ``GspaApiEU``.
+This module keeps Kia brand constants. Remote actions are not
+implemented: force refresh raises NotImplementedError (inherited from
+ApiImpl) and prewakeup is overridden here with the same — Kia EU CCI
+remote control awaits live verification (D6). Cached-state parsing
+requires a live response fixture (captured during integration
+validation) and raises NotImplementedError until then. Extended reads
+(driving info, history, breakdowns, DTC) inherit NotImplementedError
+from ApiImpl until live fixtures confirm their parsers.
 """
 
 # pylint:disable=missing-class-docstring,invalid-name
+
+from typing import Any
 
 from .GspaApiEU import GspaApiEU
 from .Token import Token
@@ -36,13 +40,15 @@ class KiaCciApiEU(GspaApiEU):
     REQUEST_ID_HEADER = "DD-REQUEST-ID"
     DEVICE_ID_HEADER = "X-Userdevice-Id"
 
-    def update_vehicle_with_cached_state(self, token: Token, vehicle: Vehicle) -> None:
-        """Update the vehicle with the cached stored-status state.
+    def prewakeup(self, token: Token, vehicle: Vehicle) -> dict[str, Any] | None:
+        """Kia EU CCI remote actions await live verification (D6)."""
+        raise NotImplementedError("Kia EU CCI prewakeup awaits live verification")
 
-        Thin wrapper: fetches stored-status via ``get_stored_status``
-        (inherited from the base) and parses the Kia-specific response.
-        The Kia response parser requires a live response fixture, which
-        is captured during integration validation on a real vehicle.
+    def update_vehicle_with_cached_state(self, token: Token, vehicle: Vehicle) -> None:
+        """Raise until the Kia stored-status parser is live-verified.
+
+        The Kia cached-state parser awaits a live response fixture,
+        captured during integration validation on a real vehicle (D5).
         """
         raise NotImplementedError(
             "Kia cached-state parser requires a live response fixture "

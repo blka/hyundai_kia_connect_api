@@ -186,6 +186,23 @@ def test_kia_update_cached_state_not_implemented():
         api.update_vehicle_with_cached_state(MagicMock(), MagicMock())
 
 
+def test_kia_prewakeup_not_implemented():
+    """prewakeup raises NotImplementedError (D6: Kia EU CCI remote
+    actions await live verification — no working GSPA remote POST is
+    inherited from the base)."""
+    api = _make_kia_api()
+    with pytest.raises(NotImplementedError):
+        api.prewakeup(MagicMock(), MagicMock())
+
+
+def test_kia_force_refresh_not_implemented():
+    """force_refresh_vehicle_state raises NotImplementedError (inherited
+    from ApiImpl after the remote-action move to HyundaiCciApiEU)."""
+    api = _make_kia_api()
+    with pytest.raises(NotImplementedError):
+        api.force_refresh_vehicle_state(MagicMock(), MagicMock())
+
+
 # ── VehicleManager wiring ────────────────────────────────
 
 

@@ -23,14 +23,7 @@ IVS = {
 _GSPA_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
-def _load_params(filename: str) -> dict[str, Any]:
-    path = os.path.join(_GSPA_DIR, filename)
-    with open(path) as f:
-        data: dict[str, Any] = json.load(f)
-    return data
-
-
-def _load_masks(filename: str) -> dict[str, Any]:
+def _load_json(filename: str) -> dict[str, Any]:
     path = os.path.join(_GSPA_DIR, filename)
     with open(path) as f:
         data: dict[str, Any] = json.load(f)
@@ -87,19 +80,23 @@ class GspaCipher:
     """
 
     def __init__(
-        self, params: dict[str, Any] | None = None, masks: dict[str, Any] | None = None
+        self,
+        params: dict[str, Any] | None = None,
+        masks: dict[str, Any] | None = None,
+        spec: dict[str, Any] | None = None,
     ):
         if params is None:
-            # Default constructor: load the Hyundai parameter set so that
-            # existing call sites (``GspaCipher()``) keep working unchanged.
-            spec = BRAND_CIPHER_SPECS["hyundai"]
-            params = _load_params(spec["params_file"])
-            masks = _load_masks(spec["masks"]) if spec["masks"] else None
-            self._spec = spec
-        elif not hasattr(self, "_spec") or getattr(self, "_spec", None) is None:
-            # Constructed directly with params but no spec (e.g. by tests):
-            # assume Hyundai when the caller does not set a spec via a factory.
-            self._spec = BRAND_CIPHER_SPECS["hyundai"]
+            # Default constructor: load the parameter set for the given
+            # spec (or Hyundai, so that existing call sites —
+            # ``GspaCipher()`` — keep working unchanged).
+            spec = spec or BRAND_CIPHER_SPECS["hyundai"]
+            params = _load_json(spec["params_file"])
+            masks = (
+                masks
+                if masks is not None
+                else (_load_json(spec["masks"]) if spec["masks"] else None)
+            )
+        self._spec = spec or BRAND_CIPHER_SPECS["hyundai"]
         self.p = params
         self.masks = masks
         self.S = [int(x, 16) for x in self.p["sbox"]]
@@ -291,10 +288,9 @@ def hyundai_cipher() -> GspaCipher:
     global _hyundai_cipher
     if _hyundai_cipher is None:
         spec = BRAND_CIPHER_SPECS["hyundai"]
-        params = _load_params(spec["params_file"])
-        masks = _load_masks(spec["masks"]) if spec["masks"] else None
-        _hyundai_cipher = GspaCipher(params, masks)
-        _hyundai_cipher._spec = spec
+        params = _load_json(spec["params_file"])
+        masks = _load_json(spec["masks"]) if spec["masks"] else None
+        _hyundai_cipher = GspaCipher(params, masks, spec=spec)
     return _hyundai_cipher
 
 
@@ -302,10 +298,9 @@ def kia_cipher() -> GspaCipher:
     global _kia_cipher
     if _kia_cipher is None:
         spec = BRAND_CIPHER_SPECS["kia"]
-        params = _load_params(spec["params_file"])
-        masks = _load_masks(spec["masks"]) if spec["masks"] else None
-        _kia_cipher = GspaCipher(params, masks)
-        _kia_cipher._spec = spec
+        params = _load_json(spec["params_file"])
+        masks = _load_json(spec["masks"]) if spec["masks"] else None
+        _kia_cipher = GspaCipher(params, masks, spec=spec)
     return _kia_cipher
 
 
@@ -322,7 +317,11 @@ def encrypt_block(plaintext_16: bytes) -> bytes:
 
 
 def encrypt_cfb(iv: bytes, plaintext: bytes, region: int = 1) -> bytes:
-    """CFB-128 encrypt for X-Stamp computation (Hyundai brand)."""
+    """CFB-128 encrypt for X-Stamp computation (Hyundai brand).
+
+    The region argument guards stamp usage only (US/CA unsupported);
+    the IV is caller-supplied.
+    """
     if region in (4, 5):
         raise NotImplementedError("US/CA not supported — EU-cipher regions only")
     if region not in IVS:
