@@ -588,8 +588,6 @@ class ApiImplType1(ApiImpl):
         winter_mode = get_child_value(
             state, "Green.BatteryManagement.WinterModeOperation"
         )
-        if winter_mode is not None:
-            vehicle.ev_battery_winter_mode = bool(winter_mode)
 
         # EV battery preconditioning toggle.
         # EV (e.g. IONIQ 5) reports Green.BatteryManagement.BatteryPreCondition.Status
@@ -598,17 +596,24 @@ class ApiImplType1(ApiImpl):
         # Fe) reports only WinterModeOperation; "winter mode" is itself the
         # battery preconditioning/winter-heating toggle there, so keep it as the
         # fallback (preserves existing HEV behaviour, no regression).
-        # Status enum confirmed via reporter dumps (kia_uvo #1652, 2026-07-12):
-        #   0 = disabled in vehicle settings, 2 = enabled in vehicle settings.
+        # Status enum mapping matches the official app (kia_uvo #1823, dump:
+        # Status=2 with preconditioning off in vehicle settings):
+        #   0 / 2 / 6 = off, 3 / 4 = on.
         # Pre-#1205 this sensor aliased WinterModeOperation, which is absent on
         # EVs -> the sensor never appeared (see API #1187).
         battery_precondition_status = get_child_value(
             state, "Green.BatteryManagement.BatteryPreCondition.Status"
         )
         if battery_precondition_status is not None:
-            vehicle.ev_battery_precondition_enabled = battery_precondition_status != 0
+            vehicle.ev_battery_precondition_enabled = battery_precondition_status in (
+                3,
+                4,
+            )
+            # WinterModeOperation is not a user-facing "Winter Mode" toggle on
+            # EVs (kia_uvo #1823) — leave ev_battery_winter_mode unset (None).
         elif winter_mode is not None:
             vehicle.ev_battery_precondition_enabled = bool(winter_mode)
+            vehicle.ev_battery_winter_mode = bool(winter_mode)
 
         if get_child_value(state, "Green.Electric.SmartGrid.RealTimePower") is not None:
             vehicle.ev_charging_power = get_child_value(
