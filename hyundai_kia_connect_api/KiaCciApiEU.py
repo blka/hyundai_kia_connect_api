@@ -8,8 +8,9 @@ ApiImpl) and prewakeup is overridden here with the same — Kia EU CCI
 remote control awaits live verification (D6). Cached-state parsing
 requires a live response fixture (captured during integration
 validation) and raises NotImplementedError until then. Extended reads
-(driving info, history, breakdowns, DTC) inherit NotImplementedError
-from ApiImpl until live fixtures confirm their parsers.
+(driving info, history, breakdowns, DTC) are Hyundai-specific parsers
+and are intentionally not present on Kia; they are added once live
+fixtures from a real Kia vehicle confirm their payload shapes.
 """
 
 # pylint:disable=missing-class-docstring,invalid-name

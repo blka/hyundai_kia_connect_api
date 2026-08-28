@@ -701,7 +701,7 @@ class GspaApiEU(ApiImpl):
     # GSPA X-Stamp computation
     # ------------------------------------------------------------------
 
-    def _get_stamp(self, token: Token) -> tuple[str | None, str | None]:
+    def _get_stamp(self, token: Token) -> tuple[str, str]:
         """Compute GSPA X-Stamp + tsid for GSPA endpoint authentication.
 
         Returns (stamp, tsid) — both must be sent as X-Stamp + X-Request-Id
