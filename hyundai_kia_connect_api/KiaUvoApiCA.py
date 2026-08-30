@@ -476,9 +476,16 @@ class KiaUvoApiCA(ApiImpl):
         # Service Status Call
         service = self._get_next_service(token, vehicle)
 
-        # Get location if the car has moved since last call
+        # Get location if the car has moved since last call, or if no location
+        # is known yet: coordinates live only in the in-memory Vehicle object,
+        # so after a restart/reload a parked car would otherwise never get a
+        # location fetch and the location sensors stay unavailable until the
+        # car physically moves (Hyundai-Kia-Connect/kia_uvo#1844).
         if vehicle.odometer:
-            if vehicle.odometer < get_child_value(service, "currentOdometer"):
+            if (
+                vehicle.odometer < get_child_value(service, "currentOdometer")
+                or vehicle.location_latitude is None
+            ):
                 location = self.get_location(token, vehicle)
                 self._update_vehicle_properties_location(vehicle, location)
         else:
@@ -526,9 +533,14 @@ class KiaUvoApiCA(ApiImpl):
         # Service Status Call
         service = self._get_next_service(token, vehicle)
 
-        # Get location if the car has moved since last call
+        # Get location if the car has moved since last call, or if no location
+        # is known yet (same restart/reload rationale as the cached-state path
+        # above, Hyundai-Kia-Connect/kia_uvo#1844).
         if vehicle.odometer:
-            if vehicle.odometer < get_child_value(service, "currentOdometer"):
+            if (
+                vehicle.odometer < get_child_value(service, "currentOdometer")
+                or vehicle.location_latitude is None
+            ):
                 location = self.get_location(token, vehicle)
                 self._update_vehicle_properties_location(vehicle, location)
         else:
