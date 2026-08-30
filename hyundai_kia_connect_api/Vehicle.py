@@ -189,6 +189,11 @@ class Vehicle:
     _location_latitude: float = None
     _location_longitude: float = None
     _location_last_set_time: datetime.datetime = None
+    # True after an attempt to fetch the (still unknown) location. In-memory
+    # like the coordinates themselves: a restart/reload starts a fresh
+    # attempt. Bounds the unknown-location fetch to one try per session so a
+    # persistently failing Find-My-Car response cannot re-run on every poll.
+    _location_fetch_attempted: bool = False
 
     # EV fields (EV/PHEV)
 

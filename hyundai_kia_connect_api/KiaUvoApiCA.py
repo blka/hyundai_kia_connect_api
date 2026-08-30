@@ -480,12 +480,17 @@ class KiaUvoApiCA(ApiImpl):
         # is known yet: coordinates live only in the in-memory Vehicle object,
         # so after a restart/reload a parked car would otherwise never get a
         # location fetch and the location sensors stay unavailable until the
-        # car physically moves (Hyundai-Kia-Connect/kia_uvo#1844).
+        # car physically moves (Hyundai-Kia-Connect/kia_uvo#1844). The
+        # unknown-location fetch is bounded to one attempt per session (the
+        # flag is in-memory like the coordinates) so a persistently failing
+        # Find-My-Car response cannot re-run on every poll.
         if vehicle.odometer:
-            if (
-                vehicle.odometer < get_child_value(service, "currentOdometer")
-                or vehicle.location_latitude is None
+            if vehicle.odometer < get_child_value(service, "currentOdometer") or (
+                vehicle.location_latitude is None
+                and not vehicle._location_fetch_attempted
             ):
+                if vehicle.location_latitude is None:
+                    vehicle._location_fetch_attempted = True
                 location = self.get_location(token, vehicle)
                 self._update_vehicle_properties_location(vehicle, location)
         else:
@@ -534,13 +539,16 @@ class KiaUvoApiCA(ApiImpl):
         service = self._get_next_service(token, vehicle)
 
         # Get location if the car has moved since last call, or if no location
-        # is known yet (same restart/reload rationale as the cached-state path
-        # above, Hyundai-Kia-Connect/kia_uvo#1844).
+        # is known yet (same restart/reload rationale and same one-attempt
+        # bound as the cached-state path above,
+        # Hyundai-Kia-Connect/kia_uvo#1844).
         if vehicle.odometer:
-            if (
-                vehicle.odometer < get_child_value(service, "currentOdometer")
-                or vehicle.location_latitude is None
+            if vehicle.odometer < get_child_value(service, "currentOdometer") or (
+                vehicle.location_latitude is None
+                and not vehicle._location_fetch_attempted
             ):
+                if vehicle.location_latitude is None:
+                    vehicle._location_fetch_attempted = True
                 location = self.get_location(token, vehicle)
                 self._update_vehicle_properties_location(vehicle, location)
         else:
