@@ -97,7 +97,10 @@ class TestEV5Dispatch:
     def test_ccs2_ev_uses_flat_endpoints(self, api):
         calls = _mock_post(api)
         v = _make_vehicle(ccs2=1, engine_type=ENGINE_TYPES.EV)
-        api.schedule_charging_and_climate(MagicMock(spec=Token), v, _options())
+        # climate part present (departure enabled) so both endpoints are hit
+        api.schedule_charging_and_climate(
+            MagicMock(spec=Token), v, _options(first_departure_enabled=True)
+        )
         urls = [c["url"] for c in calls]
         assert any(u.endswith("/ccs2/reservation/charge") for u in urls)
         assert any(u.endswith("/ccs2/reservation/hvac") for u in urls)
@@ -258,10 +261,50 @@ class TestEV5FlatHvacPayload:
         calls = _mock_post(api)
         v = _make_vehicle(ccs2=1, engine_type=ENGINE_TYPES.EV)
         api.schedule_charging_and_climate(
-            MagicMock(spec=Token), v, _options(first_departure_enabled=False)
+            MagicMock(spec=Token), v, _options(climate_enabled=True)
         )
         hvac = next(c["json"] for c in calls if c["url"].endswith("/hvac"))
         assert hvac["reservedHVACInfo1"]["reservHVACflag"] == 0
+        assert hvac["reservedHVACInfo1"]["reservHVACSet"]["airCtrl"] == 1
+
+
+class TestEV5HvacSkip:
+    """The no-op HVAC write is skipped instead of POSTed.
+
+    Live evidence (kia_uvo discussion #1764, GasManGeek EV6 log 2026-08-19):
+    the charge write succeeds (0000) and the immediately-following unchanged
+    HVAC write is rejected with 4004 "Duplicate request", failing the whole
+    action. When nothing climate-related is requested the HVAC write is
+    skipped entirely.
+    """
+
+    def test_noop_hvac_skipped(self, api):
+        calls = _mock_post(api)
+        v = _make_vehicle(ccs2=1, engine_type=ENGINE_TYPES.EV)
+        # default options: both departures disabled, climate_enabled False
+        api.schedule_charging_and_climate(MagicMock(spec=Token), v, _options())
+        urls = [c["url"] for c in calls]
+        assert len(urls) == 1
+        assert urls[0].endswith("/ccs2/reservation/charge")
+
+    def test_hvac_sent_when_departure_enabled(self, api):
+        calls = _mock_post(api)
+        v = _make_vehicle(ccs2=1, engine_type=ENGINE_TYPES.EV)
+        api.schedule_charging_and_climate(
+            MagicMock(spec=Token), v, _options(first_departure_enabled=True)
+        )
+        urls = [c["url"] for c in calls]
+        assert any(u.endswith("/ccs2/reservation/charge") for u in urls)
+        assert any(u.endswith("/ccs2/reservation/hvac") for u in urls)
+
+    def test_hvac_sent_when_climate_enabled(self, api):
+        calls = _mock_post(api)
+        v = _make_vehicle(ccs2=1, engine_type=ENGINE_TYPES.EV)
+        api.schedule_charging_and_climate(
+            MagicMock(spec=Token), v, _options(climate_enabled=True)
+        )
+        urls = [c["url"] for c in calls]
+        assert any(u.endswith("/ccs2/reservation/hvac") for u in urls)
 
 
 class TestEV5Return:

@@ -1280,6 +1280,19 @@ class ApiImplType1(ApiImpl):
         _LOGGER.debug(f"{DOMAIN} - EV5 schedule charge response: {charge_response}")
         _check_response_for_errors(charge_response)
 
+        # EV5 climate is a separate endpoint from the charge write. When
+        # nothing climate-related is requested the write is a no-op, and
+        # sending it right after the charge write is rejected by the backend
+        # as a duplicate request (4004), failing the whole action — skip it
+        # instead. Live evidence: KiaUvo discussion #1764 (EV6 debug log
+        # 2026-08-19: charge 0000, then hvac 4004 duplicate).
+        if (
+            not departures[0].enabled
+            and not departures[1].enabled
+            and not options.climate_enabled
+        ):
+            return charge_response["msgId"]
+
         _LOGGER.debug(f"{DOMAIN} - EV5 schedule hvac request: {hvac_payload}")
         hvac_response = self.session.post(
             base_url + "/hvac",
