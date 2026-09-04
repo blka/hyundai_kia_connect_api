@@ -586,7 +586,7 @@ class GspaApiEU(ApiImpl):
     def refresh_access_token(self, token: Token) -> Token:
         """Refresh access token using the stored CCI token set.
 
-        CCI flow: POST v1/auth/token-refresh with the full token set,
+        CCI flow: POST v2/auth/token-refresh with the full token set,
         then re-exchange the CCS token. Falls back to full login if
         the refresh token is missing or the exchange fails.
         """
@@ -603,8 +603,15 @@ class GspaApiEU(ApiImpl):
     def _refresh_cci_token(self, token: Token) -> Token:
         """Refresh the CCI token set and re-exchange the CCS token.
 
-        POST cci-api-eu/domain/api/v1/auth/token-refresh (v1, not v2)
-        with the full CCI token set, then re-exchange the CCS token.
+        POST cci-api-eu/domain/api/v2/auth/token-refresh with the full
+        CCI token set (JSON), then re-exchange the CCS token.
+
+        Live probe (2026-09-04, one account): v1+JSON returns
+        HTTP 500 code 9009; v1+form-encoded and v2+JSON both return
+        HTTP 200 with the full refreshed set (connector, expiresIn,
+        isRequiredTerm). v2+JSON adopted — it is the shape confirmed in
+        production iOS HAR traffic, and the v1 path is form-encoded in
+        the app, not JSON.
         """
         device_id = token.device_id or ""
         headers = self._get_cci_headers(
@@ -624,7 +631,7 @@ class GspaApiEU(ApiImpl):
             "idToken": token.id_token or "",
         }
         resp = requests.post(
-            f"{self.CCI_DOMAIN_API_URL}v1/auth/token-refresh",
+            f"{self.CCI_DOMAIN_API_URL}v2/auth/token-refresh",
             headers=headers,
             json=body,
             timeout=(5, 30),

@@ -394,8 +394,13 @@ def test_refresh_access_token_falls_back_on_missing_cci_tokens():
     assert result.access_token == "Bearer from-login"
 
 
-def test_refresh_cci_token_uses_v1_endpoint():
-    """_refresh_cci_token posts to v1/auth/token-refresh (not v2)."""
+def test_refresh_cci_token_uses_v2_endpoint():
+    """_refresh_cci_token posts to v2/auth/token-refresh.
+
+    Live-verified 2026-09-04: v1+JSON fails (HTTP 500 code 9009);
+    v2+JSON is the production-confirmed shape (iOS HAR) and returns
+    HTTP 200 with the full refreshed set.
+    """
     api = _make_hyundai_api()
     refresh_resp = MagicMock(status_code=200)
     refresh_resp.json.return_value = {
@@ -421,10 +426,10 @@ def test_refresh_cci_token_uses_v1_endpoint():
         token = _make_token()
         result = api.refresh_access_token(token)
 
-    # First call should be to v1/auth/token-refresh
+    # First call should be to v2/auth/token-refresh
     first_call_url = mock_post.call_args_list[0].args[0]
-    assert "v1/auth/token-refresh" in first_call_url
-    assert "v2/auth/token-refresh" not in first_call_url
+    assert "v2/auth/token-refresh" in first_call_url
+    assert "v1/auth/token-refresh" not in first_call_url
     assert result.access_token == "Bearer new-ccs-token"
 
 
