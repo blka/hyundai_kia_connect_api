@@ -602,3 +602,53 @@ def test_control_command_2xx_business_error_raises():
         post.return_value = MagicMock(status_code=200, json=lambda: body)
         with pytest.raises(AuthenticationError):
             api.stop_rear_seat_alarm(token, vehicle)
+
+
+def test_set_ota_update_start():
+    """set_ota_update(start=True) POSTs {updateStart: 1} to the mru
+    ota-updates path (1 = start). The response has no polling SID, so
+    the parsed body is returned."""
+    result, call = _run_command(HyundaiCciApiEU.set_ota_update, True)
+    assert isinstance(result, dict)
+    assert call.args[0].endswith("/gspa/v1/mru/vehicles/test123/ota-updates")
+    assert call.kwargs["json"] == {"updateStart": 1}
+
+
+def test_set_ota_update_cancel():
+    """set_ota_update(start=False) POSTs {updateStart: 2} (cancel)."""
+    result, call = _run_command(HyundaiCciApiEU.set_ota_update, False)
+    assert isinstance(result, dict)
+    assert call.args[0].endswith("/gspa/v1/mru/vehicles/test123/ota-updates")
+    assert call.kwargs["json"] == {"updateStart": 2}
+
+
+def test_set_ota_reservation_passthrough():
+    """set_ota_reservation POSTs the settings body unchanged to the D4
+    path (missing vehicles/{carId} was the pre-rework bug)."""
+    settings = {
+        "operation": "create",
+        "targetReservationTime": "20260905-0300",
+        "originReservationTime": None,
+    }
+    result, call = _run_command(HyundaiCciApiEU.set_ota_reservation, settings)
+    assert isinstance(result, dict)
+    assert call.args[0].endswith(
+        "/gspa/v1/mru/vehicles/test123/ota-updates-reservation"
+    )
+    assert call.kwargs["json"] == settings
+
+
+def test_set_ota_update_uses_bearer_headers():
+    """OTA commands authenticate with the standard GSPA headers — the
+    PIN-derived control token path is not used."""
+    api = _make_api()
+    token = _make_token()
+    vehicle = _make_vehicle()
+    with (
+        patch("hyundai_kia_connect_api.GspaApiEU.requests.post") as post,
+        patch.object(HyundaiCciApiEU, "_get_control_token") as get_ct,
+    ):
+        post.return_value = MagicMock(status_code=200, json=lambda: ENVELOPE)
+        HyundaiCciApiEU.set_ota_update(api, token, vehicle, True)
+    get_ct.assert_not_called()
+    assert post.call_args.kwargs["headers"]["Authorization"] == "Bearer ccs-token"
