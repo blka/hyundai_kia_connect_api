@@ -2,6 +2,7 @@
 _get_stamp(), and _fetch_user_id()."""
 
 import datetime as dt
+import logging
 from contextlib import ExitStack
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -713,3 +714,33 @@ def test_fob_low_battery_bool_or_none(low_battery, expected):
     }
     api._update_vehicle_properties_ccs2(vehicle, state)
     assert vehicle.smart_key_battery_warning_is_on is expected
+
+
+def test_refresh_4111_logs_info_not_warning(caplog):
+    """CCI 4111 (credentials expired) is an expected lifecycle event:
+    log INFO, skip the WARNING, fall back to full login."""
+    api = _make_hyundai_api()
+    token = _make_token()
+    with (
+        patch.object(
+            api,
+            "_refresh_cci_token",
+            side_effect=AuthenticationError(
+                'CCI token refresh failed: HTTP 401 — {"code":"4111"}'
+            ),
+        ),
+        patch.object(api, "login", return_value=token) as login,
+        caplog.at_level(logging.DEBUG),
+    ):
+        result = api.refresh_access_token(token)
+    assert result is token  # login() mocked return value
+    assert login.called
+    refresh_warnings = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING and "refresh" in r.message.lower()
+    ]
+    assert refresh_warnings == []
+    assert any(
+        r.levelno == logging.INFO and "4111" in r.message for r in caplog.records
+    )
