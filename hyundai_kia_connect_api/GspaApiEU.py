@@ -309,6 +309,13 @@ class GspaApiEU(ApiImpl):
         self._control_token_expiry: float = 0.0
         self._control_token_source: str | None = None
 
+        # MQTT Service Hub state (used by MqttServiceHubMixin on
+        # HyundaiCciApiEU): session tid from device/host response headers,
+        # and a requests.Session keeping cookies/connection state like
+        # OkHttp's ConnectionPool between host → register → protocol.
+        self._service_hub_tid: str | None = None
+        self._service_hub_session: requests.Session | None = None
+
         self.session = ApiImplSession()
 
     def login(

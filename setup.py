@@ -35,6 +35,7 @@ setup(
     install_requires=requirements,
     extras_require={
         "google": ["geopy>=2.2.0"],
+        "mqtt": ["paho-mqtt>=2.1.0"],
     },
     license="MIT license",
     long_description=long_description,
