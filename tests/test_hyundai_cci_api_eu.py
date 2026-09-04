@@ -751,12 +751,12 @@ def test_refresh_4111_logs_info_not_warning(caplog):
     )
 
 
-# ── _update_vehicle_gspa_data() — sw/ota reads on cached path ──
+# ── _update_vehicle_gspa_data() — sw/ota/valet reads on cached path ──
 
 
-def test_update_vehicle_gspa_data_populates_sw_ota():
-    """GSPA query reads populate software_version / ota_update_available
-    on the cached-update path."""
+def test_update_vehicle_gspa_data_populates_sw_ota_valet():
+    """GSPA query reads populate software_version / ota_update_available /
+    valet_mode_active on the cached-update path."""
     api = _make_hyundai_api()
     token = _make_token()
     vehicle = Vehicle()
@@ -770,15 +770,17 @@ def test_update_vehicle_gspa_data_populates_sw_ota():
             "get_ota_updates",
             return_value={"otaUpdateList": [{"id": "x"}]},
         ),
+        patch.object(api, "get_valet_status", return_value={"valetMode": "Active"}),
     ):
         api._update_vehicle_gspa_data(token, vehicle)
     assert vehicle.software_version == "ABC123"
     assert vehicle.ota_update_available is True
+    assert vehicle.valet_mode_active is True
 
 
 def test_update_vehicle_gspa_data_failure_sets_unknown():
-    """HA convention: a failed sw/ota read leaves the field as unknown
-    (None), not stale."""
+    """HA convention: a failed read leaves the field as unknown (None),
+    not stale."""
     api = _make_hyundai_api()
     token = _make_token()
     vehicle = Vehicle()
@@ -786,7 +788,73 @@ def test_update_vehicle_gspa_data_failure_sets_unknown():
     with (
         patch.object(api, "get_software_version", side_effect=APIError("boom")),
         patch.object(api, "get_ota_updates", side_effect=APIError("boom")),
+        patch.object(api, "get_valet_status", side_effect=APIError("boom")),
     ):
         api._update_vehicle_gspa_data(token, vehicle)
     assert vehicle.ota_update_available is None
+    assert vehicle.valet_mode_active is None
     assert vehicle._ota_checked is True  # checked — don't retry until force refresh
+    assert vehicle._valet_failed is True  # circuit broken until force refresh
+
+
+def test_update_vehicle_gspa_data_pessimistic_then_retry_on_success():
+    """Pessimistic flags: a failed valet read skips retries on subsequent
+    cached updates; a success re-arms the read."""
+    api = _make_hyundai_api()
+    token = _make_token()
+    vehicle = Vehicle()
+    vehicle.id = "car-123"
+    with (
+        patch.object(api, "get_software_version", return_value=None),
+        patch.object(api, "get_ota_updates", return_value=None),
+        patch.object(api, "get_valet_status", side_effect=APIError("boom")) as valet,
+    ):
+        api._update_vehicle_gspa_data(token, vehicle)
+        assert valet.call_count == 1
+        api._update_vehicle_gspa_data(token, vehicle)
+        assert valet.call_count == 1  # skipped — circuit open
+    vehicle._valet_failed = False  # force refresh reset
+    with (
+        patch.object(api, "get_software_version", return_value=None),
+        patch.object(api, "get_ota_updates", return_value=None),
+        patch.object(api, "get_valet_status", return_value={"valetMode": ""}),
+    ):
+        api._update_vehicle_gspa_data(token, vehicle)
+    assert vehicle._valet_failed is False  # success re-arms the read
+
+
+def test_update_vehicle_gspa_data_widget_and_breakdowns():
+    """Widget lamp data + DTC breakdowns parse on the cached-update path."""
+    api = _make_hyundai_api()
+    token = _make_token()
+    vehicle = Vehicle()
+    vehicle.id = "car-123"
+    widget = {
+        "state": {
+            "Vehicle": {
+                "Body": {
+                    "Lights": {
+                        "Front": {
+                            "Left": {
+                                "Low": {"Warning": 1.0},
+                                "TurnSignal": {"Warning": 0.0},
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    with (
+        patch.object(api, "get_software_version", return_value=None),
+        patch.object(api, "get_ota_updates", return_value=None),
+        patch.object(api, "get_valet_status", return_value=None),
+        patch.object(api, "get_stored_status_widget", return_value=widget),
+        patch.object(
+            api, "get_breakdowns", return_value={"breakdown": [{"ecuName": "EMS"}]}
+        ),
+    ):
+        api._update_vehicle_gspa_data(token, vehicle)
+    assert vehicle.headlamp_left_low is True
+    assert vehicle.turn_signal_left_front is False
+    assert vehicle.dtc_count == 1

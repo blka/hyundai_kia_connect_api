@@ -43,6 +43,7 @@ class KiaCciApiEU(GspaApiEU):
     CIPHER_BRAND = "kia"
     REQUEST_ID_HEADER = "DD-REQUEST-ID"
     DEVICE_ID_HEADER = "X-Userdevice-Id"
+    CCAPI_BASE_URL = "prd.eu-ccapi.kia.com:8080"
 
     def prewakeup(self, token: Token, vehicle: Vehicle) -> dict[str, Any] | None:
         """Kia EU CCI remote actions await live verification (D6)."""

@@ -60,6 +60,7 @@ class HyundaiCciApiEU(GspaApiEU):
     CIPHER_BRAND = "hyundai"
     REQUEST_ID_HEADER = "X-Request-Id"
     DEVICE_ID_HEADER = "X-Device-Id"
+    CCAPI_BASE_URL = "prd.eu-ccapi.hyundai.com:8080"
 
     # SVM reads confirmed live on the EU GSPA endpoints (na-images);
     # KiaCciApiEU keeps the inherited False until verified there too.
@@ -206,6 +207,111 @@ class HyundaiCciApiEU(GspaApiEU):
                 descriptions[str(ecu_name)] = dtc_list
         if descriptions:
             vehicle.dtc_descriptions = descriptions
+
+    @staticmethod
+    def _parse_gspa_widget_lamp_data(vehicle: Vehicle, widget: dict[str, Any]) -> None:
+        """Parse lamp/signal/ignition/sleep data from GSPA stored-status-widget.
+
+        Live-probed structure (2026-06-15, Santa Fe HEV):
+          state.Vehicle.Body.Lights.Front.Left.Low.Warning  (0.0/1.0)
+          state.Vehicle.Body.Lights.Front.Left.High.Warning
+          state.Vehicle.Body.Lights.Front.Left.TurnSignal.Warning
+          state.Vehicle.Body.Lights.Rear.Left.StopLamp.Warning
+          state.Vehicle.Electronics.PowerSupply.Ignition3  (0.0/1.0)
+          state.Vehicle.RemoteControl.SleepMode  (0.0/1.0)
+          state.Vehicle.Drivetrain.Transmission.ParkingPosition  (0.0/1.0)
+
+        Values are 0.0/1.0 floats. All parsing is defensive.
+        """
+        # The widget data may be nested under "state.Vehicle" or flat
+        state = widget.get("state", widget)
+        vehicle_data = state.get("Vehicle", state)
+
+        # Headlamp data from Body.Lights.Front
+        lights = vehicle_data.get("Body", {}).get("Lights", {})
+        front = lights.get("Front", {})
+        front_left = front.get("Left", {})
+        front_right = front.get("Right", {})
+
+        if isinstance(front_left, dict):
+            low = front_left.get("Low", {})
+            if isinstance(low, dict) and "Warning" in low:
+                vehicle.headlamp_left_low = bool(low["Warning"])
+            high = front_left.get("High", {})
+            if isinstance(high, dict) and "Warning" in high:
+                vehicle.headlamp_left_high = bool(high["Warning"])
+            bifunc = front_left.get("Bifunc", {})
+            if isinstance(bifunc, dict) and "Warning" in bifunc:
+                vehicle.headlamp_left_bifunc = bool(bifunc["Warning"])
+            ts = front_left.get("TurnSignal", {})
+            if isinstance(ts, dict) and "Warning" in ts:
+                vehicle.turn_signal_left_front = bool(ts["Warning"])
+
+        if isinstance(front_right, dict):
+            low = front_right.get("Low", {})
+            if isinstance(low, dict) and "Warning" in low:
+                vehicle.headlamp_right_low = bool(low["Warning"])
+            high = front_right.get("High", {})
+            if isinstance(high, dict) and "Warning" in high:
+                vehicle.headlamp_right_high = bool(high["Warning"])
+            bifunc = front_right.get("Bifunc", {})
+            if isinstance(bifunc, dict) and "Warning" in bifunc:
+                vehicle.headlamp_right_bifunc = bool(bifunc["Warning"])
+            ts = front_right.get("TurnSignal", {})
+            if isinstance(ts, dict) and "Warning" in ts:
+                vehicle.turn_signal_right_front = bool(ts["Warning"])
+
+        # Headlamp system warning
+        head_lamp = front.get("HeadLamp", {})
+        if isinstance(head_lamp, dict) and "SystemWarning" in head_lamp:
+            vehicle.headlamp_status = head_lamp.get("SystemWarning")
+
+        # Stop lamp data from Body.Lights.Rear
+        rear = lights.get("Rear", {})
+        rear_left = rear.get("Left", {})
+        rear_right = rear.get("Right", {})
+        if isinstance(rear_left, dict):
+            sl = rear_left.get("StopLamp", {})
+            if isinstance(sl, dict) and "Warning" in sl:
+                vehicle.stop_lamp_left = bool(sl["Warning"])
+            ts = rear_left.get("TurnSignal", {})
+            if isinstance(ts, dict) and "Warning" in ts:
+                vehicle.turn_signal_left_rear = bool(ts["Warning"])
+        if isinstance(rear_right, dict):
+            sl = rear_right.get("StopLamp", {})
+            if isinstance(sl, dict) and "Warning" in sl:
+                vehicle.stop_lamp_right = bool(sl["Warning"])
+            ts = rear_right.get("TurnSignal", {})
+            if isinstance(ts, dict) and "Warning" in ts:
+                vehicle.turn_signal_right_rear = bool(ts["Warning"])
+
+        # Ignition state from Electronics.PowerSupply
+        power_supply = vehicle_data.get("Electronics", {}).get("PowerSupply", {})
+        if isinstance(power_supply, dict):
+            ign3 = power_supply.get("Ignition3")
+            if ign3 is not None:
+                vehicle.ign3 = bool(ign3)
+
+        # Remote ignition (top-level key in GSPA widget)
+        remote_ign = vehicle_data.get("remoteIgnition")
+        if remote_ign is not None:
+            vehicle.remote_ignition = bool(remote_ign)
+
+        # Sleep mode from RemoteControl
+        remote_control = vehicle_data.get("RemoteControl", {})
+        if isinstance(remote_control, dict):
+            sleep = remote_control.get("SleepMode")
+            if sleep is not None:
+                vehicle.sleep_mode_check = bool(sleep)
+
+        # Transmission from Drivetrain
+        drivetrain = vehicle_data.get("Drivetrain", {})
+        if isinstance(drivetrain, dict):
+            transmission = drivetrain.get("Transmission", {})
+            if isinstance(transmission, dict):
+                parking = transmission.get("ParkingPosition")
+                if parking is not None:
+                    vehicle.transmission_condition = parking
 
     # ------------------------------------------------------------------
     # CCS2 vehicle property mapping
@@ -894,3 +1000,31 @@ class HyundaiCciApiEU(GspaApiEU):
         except Exception:
             vehicle.ota_update_available = None  # HA convention: unavailable = unknown
             _LOGGER.debug(f"{DOMAIN} - GSPA ota_updates update failed")
+
+        try:
+            if not vehicle._valet_failed:
+                vehicle._valet_failed = True  # pessimistic — concurrent workers skip
+                valet = self.get_valet_status(token, vehicle)
+                vehicle._valet_failed = False  # success — retry next cached update
+                if valet and isinstance(valet, dict):
+                    mode = valet.get("valetMode", "").lower()
+                    vehicle.valet_mode_active = mode == "active"
+        except Exception:
+            vehicle.valet_mode_active = None  # HA convention: unavailable = unknown
+            _LOGGER.debug(f"{DOMAIN} - GSPA valet_status update failed")
+
+        # Stored-status-widget provides lamp, signal, ignition, sleep data
+        try:
+            widget = self.get_stored_status_widget(token, vehicle)
+            if widget and isinstance(widget, dict):
+                self._parse_gspa_widget_lamp_data(vehicle, widget)
+        except Exception:
+            _LOGGER.debug(f"{DOMAIN} - GSPA stored-status-widget failed")
+
+        # DTC breakdowns
+        try:
+            bd = self.get_breakdowns(token, vehicle)
+            if bd and isinstance(bd, dict):
+                self._parse_breakdowns(vehicle, bd)
+        except Exception:
+            _LOGGER.debug(f"{DOMAIN} - GSPA breakdowns update failed")
