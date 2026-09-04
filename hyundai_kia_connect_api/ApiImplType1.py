@@ -1191,7 +1191,10 @@ class ApiImplType1(ApiImpl):
                         "time": options.off_peak_start_time.strftime("%I%M"),
                     },
                 },
-                "offPeakPowerFlag": 1 if options.off_peak_charge_only_enabled else 2,
+                # Flag semantics match the apps' vehicle data model:
+                # 1 = considering peak time ("off-peak tariffs prioritised"),
+                # 2 = only peak time ("off-peak tariffs only"), 0 = not applied.
+                "offPeakPowerFlag": 2 if options.off_peak_charge_only_enabled else 1,
             },
             "reservFlag": 1 if options.charging_enabled else 0,
         }
@@ -1230,7 +1233,8 @@ class ApiImplType1(ApiImpl):
 
         charge_payload = {
             "reservFlag": 1 if options.charging_enabled else 0,
-            "offpeakPowerFlag": (1 if options.off_peak_charge_only_enabled else 2),
+            # Same enum as the combined path: 2 = only off-peak, 1 = prioritised.
+            "offpeakPowerFlag": (2 if options.off_peak_charge_only_enabled else 1),
             "reservStartTime": {
                 "time": options.off_peak_start_time.strftime("%I%M"),
                 "timeSection": (

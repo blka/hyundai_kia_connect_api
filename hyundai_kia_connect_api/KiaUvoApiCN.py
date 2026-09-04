@@ -934,6 +934,9 @@ class KiaUvoApiCN(ApiImplType1):
             ),
         )
 
+        # offPeakPowerFlag semantics match the apps' vehicle data model:
+        # 1 = considering peak time ("off-peak tariffs prioritised"),
+        # 2 = only peak time ("off-peak tariffs only"), 0 = not applied.
         if get_child_value(
             state,
             "status.evStatus.reservChargeInfos.offpeakPowerInfo.offPeakPowerFlag",
@@ -943,7 +946,7 @@ class KiaUvoApiCN(ApiImplType1):
                     state,
                     "status.evStatus.reservChargeInfos.offpeakPowerInfo.offPeakPowerFlag",
                 )
-                == 1
+                == 2
             ):
                 vehicle.ev_off_peak_charge_only_enabled = True
             elif (
@@ -951,7 +954,7 @@ class KiaUvoApiCN(ApiImplType1):
                     state,
                     "status.evStatus.reservChargeInfos.offpeakPowerInfo.offPeakPowerFlag",
                 )
-                == 2
+                == 1
             ):
                 vehicle.ev_off_peak_charge_only_enabled = False
 

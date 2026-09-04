@@ -505,8 +505,8 @@ def test_ccs2_off_peak_sentinel_31_70_is_none_silent(ccs2_api, vehicle, caplog):
     assert "malformed" not in caplog.text
 
 
-def test_schedule_charging_off_peak_flag_not_inverted(ccs2_api, vehicle):
-    """charge_only=True (time-priority) must send offPeakPowerFlag=1, not 2."""
+def test_schedule_charging_off_peak_flag_only(ccs2_api, vehicle):
+    """charge_only=True must send offPeakPowerFlag=2 ("off-peak tariffs only")."""
     from hyundai_kia_connect_api.ApiImpl import ScheduleChargingClimateRequestOptions
 
     options = ScheduleChargingClimateRequestOptions(
@@ -539,11 +539,11 @@ def test_schedule_charging_off_peak_flag_not_inverted(ccs2_api, vehicle):
     vehicle.id = "test-vehicle-id"
 
     ccs2_api.schedule_charging_and_climate(token=None, vehicle=vehicle, options=options)
-    assert captured["payload"]["offPeakPowerInfo"]["offPeakPowerFlag"] == 1
+    assert captured["payload"]["offPeakPowerInfo"]["offPeakPowerFlag"] == 2
 
 
-def test_schedule_charging_off_peak_flag_target_priority(ccs2_api, vehicle):
-    """charge_only=False (target-priority) must send offPeakPowerFlag=2."""
+def test_schedule_charging_off_peak_flag_prioritised(ccs2_api, vehicle):
+    """charge_only=False must send offPeakPowerFlag=1 ("off-peak tariffs prioritised")."""
     from hyundai_kia_connect_api.ApiImpl import ScheduleChargingClimateRequestOptions
 
     options = ScheduleChargingClimateRequestOptions(
@@ -576,4 +576,4 @@ def test_schedule_charging_off_peak_flag_target_priority(ccs2_api, vehicle):
     vehicle.id = "test-vehicle-id"
 
     ccs2_api.schedule_charging_and_climate(token=None, vehicle=vehicle, options=options)
-    assert captured["payload"]["offPeakPowerInfo"]["offPeakPowerFlag"] == 2
+    assert captured["payload"]["offPeakPowerInfo"]["offPeakPowerFlag"] == 1
