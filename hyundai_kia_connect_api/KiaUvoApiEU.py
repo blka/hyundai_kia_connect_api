@@ -1291,10 +1291,15 @@ class KiaUvoApiEU(ApiImplType1):
             ).json()
             _LOGGER.debug(f"{DOMAIN} - _get_location response: {response}")
             _check_response_for_errors(response)
-            gps_detail = response["resMsg"].get("gpsDetail")
+            res_msg = response["resMsg"]
+            gps_detail = res_msg.get("gpsDetail")
+            if gps_detail is None and res_msg.get("coord"):
+                # Some accounts return the location fields flat under resMsg
+                # (GET /location/park already uses the same flat shape).
+                gps_detail = res_msg
             if gps_detail is None:
                 _LOGGER.warning(
-                    f"{DOMAIN} - gpsDetail not found in location response, "
+                    f"{DOMAIN} - no location data in location response, "
                     "vehicle may be offline or returning partial status"
                 )
             return gps_detail
