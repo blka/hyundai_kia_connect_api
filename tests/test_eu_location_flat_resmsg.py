@@ -104,8 +104,9 @@ def test_wrapped_gps_detail_takes_precedence(eu_api, vehicle):
 
 
 def test_resmsg_without_coord_does_not_become_location(eu_api, vehicle):
-    """No gpsDetail and no coord is still the offline/partial case: no
-    fallback, keep the previously known position."""
+    """No gpsDetail and no coord is still the offline/partial case: the flat
+    fallback hands resMsg over, but the coord guard in
+    _set_location_from_gps_detail keeps the previously known position."""
     cached = dt.datetime(2026, 9, 3, 8, 0, 0, tzinfo=KiaUvoApiEU.data_timezone)
     vehicle.location = (52.52, 13.405, cached)
     location = {

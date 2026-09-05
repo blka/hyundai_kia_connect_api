@@ -1292,16 +1292,9 @@ class KiaUvoApiEU(ApiImplType1):
             _LOGGER.debug(f"{DOMAIN} - _get_location response: {response}")
             _check_response_for_errors(response)
             res_msg = response["resMsg"]
-            gps_detail = res_msg.get("gpsDetail")
-            if gps_detail is None and res_msg.get("coord"):
-                # Some accounts return the location fields flat under resMsg
-                # (GET /location/park already uses the same flat shape).
-                gps_detail = res_msg
-            if gps_detail is None:
-                _LOGGER.warning(
-                    f"{DOMAIN} - no location data in location response, "
-                    "vehicle may be offline or returning partial status"
-                )
+            # Some accounts return the location fields flat under resMsg
+            # (GET /location/park already parses the same flat shape, #1301).
+            gps_detail = res_msg.get("gpsDetail") or res_msg
             return gps_detail
         except Exception as e:
             _LOGGER.exception(f"{DOMAIN} - _get_location failed: {e}")  # noqa: TRY401
@@ -1320,6 +1313,10 @@ class KiaUvoApiEU(ApiImplType1):
         offset early. Convert here, as the CCS2 'Date' field does (#1147).
         """
         if not gps_detail or not get_child_value(gps_detail, "coord.lat"):
+            _LOGGER.warning(
+                f"{DOMAIN} - no location data in location response, "
+                "vehicle may be offline or returning partial status"
+            )
             return
         # A missing timestamp must stay None, which HA shows as "unknown".
         # See kia_uvo #1771.
