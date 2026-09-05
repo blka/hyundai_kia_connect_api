@@ -36,7 +36,7 @@ from .const import (
     VALET_MODE_ACTION,
     VEHICLE_LOCK_ACTION,
 )
-from .exceptions import APIError, AuthenticationOTPRequired
+from .exceptions import APIError, AuthenticationOTPRequired, RateLimitingError
 from .HyundaiBlueLinkApiBR import HyundaiBlueLinkApiBR
 from .HyundaiBlueLinkApiUSA import HyundaiBlueLinkApiUSA
 from .HyundaiCciApiEU import HyundaiCciApiEU
@@ -140,7 +140,14 @@ class VehicleManager:
 
     def update_all_vehicles_with_cached_state(self) -> None:
         for vehicle_id in self.vehicles:
-            self.update_vehicle_with_cached_state(vehicle_id)
+            try:
+                self.update_vehicle_with_cached_state(vehicle_id)
+            except RateLimitingError:
+                raise
+            except APIError as e:
+                _LOGGER.warning(
+                    f"{DOMAIN} - Failed to update vehicle {vehicle_id}: {e}"
+                )
 
     def update_vehicle_with_cached_state(self, vehicle_id: str) -> None:
         vehicle = self.get_vehicle(vehicle_id)
@@ -160,7 +167,14 @@ class VehicleManager:
 
     def check_and_force_update_vehicles(self, force_refresh_interval: int) -> None:
         for vehicle_id in self.vehicles:
-            self.check_and_force_update_vehicle(force_refresh_interval, vehicle_id)
+            try:
+                self.check_and_force_update_vehicle(force_refresh_interval, vehicle_id)
+            except RateLimitingError:
+                raise
+            except APIError as e:
+                _LOGGER.warning(
+                    f"{DOMAIN} - Failed to update vehicle {vehicle_id}: {e}"
+                )
 
     def check_and_force_update_vehicle(
         self, force_refresh_interval: int, vehicle_id: str
@@ -184,7 +198,14 @@ class VehicleManager:
 
     def force_refresh_all_vehicles_states(self) -> None:
         for vehicle_id in self.vehicles:
-            self.force_refresh_vehicle_state(vehicle_id)
+            try:
+                self.force_refresh_vehicle_state(vehicle_id)
+            except RateLimitingError:
+                raise
+            except APIError as e:
+                _LOGGER.warning(
+                    f"{DOMAIN} - Failed to update vehicle {vehicle_id}: {e}"
+                )
 
     def force_refresh_vehicle_state(self, vehicle_id: str) -> None:
         vehicle = self.get_vehicle(vehicle_id)
