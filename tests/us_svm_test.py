@@ -22,7 +22,7 @@ def test_vehicle_has_supports_svm_field_default_none():
 
 
 def test_svm_details_can_be_imported():
-    from hyundai_kia_connect_api.svm import SVMDetails, parse_svm_response
+    from hyundai_kia_connect_api.HyundaiBlueLinkApiUSA import parse_svm_response
 
     assert SVMDetails is not None
     assert parse_svm_response is not None
@@ -60,7 +60,7 @@ def _make_svm_response(image_bytes: bytes, captured_at: str):
 
 
 def test_parse_svm_response_decodes_image_and_metadata():
-    from hyundai_kia_connect_api.svm import parse_svm_response
+    from hyundai_kia_connect_api.HyundaiBlueLinkApiUSA import parse_svm_response
 
     image = b"\xff\xd8\xff\xe0fakejpg"
     tz = dt.UTC
@@ -86,7 +86,7 @@ def test_parse_svm_response_decodes_image_and_metadata():
 
 
 def test_parse_svm_response_unknown_timestamp_does_not_crash():
-    from hyundai_kia_connect_api.svm import parse_svm_response
+    from hyundai_kia_connect_api.HyundaiBlueLinkApiUSA import parse_svm_response
 
     image = b"\xff\xd8\xff\xe0fakejpg"
     response = _make_svm_response(image, "not-a-date")
@@ -98,16 +98,15 @@ def test_parse_svm_response_unknown_timestamp_does_not_crash():
 
 
 def test_redact_svm_response_for_log_strips_image_and_gps():
-    from hyundai_kia_connect_api.svm import redact_svm_response_for_log
+    from hyundai_kia_connect_api.svm import redact_svm_metadata
 
     image = b"\xff\xd8\xff\xe0fakejpg"
     response = _make_svm_response(image, "2026-06-23T12:34:56Z")
-    safe = redact_svm_response_for_log(response)
+    safe = redact_svm_metadata(response)
 
     detail = safe["svmDetails"][0]["svmDetail"]
     assert detail["svmImage"] == "<redacted>"
-    assert detail["gpsDetail"]["coord"]["lat"] == "<redacted>"
-    assert detail["gpsDetail"]["coord"]["lon"] == "<redacted>"
+    assert detail["gpsDetail"]["coord"] == "<redacted>"
     assert detail["gpsDetail"]["head"] == "<redacted>"
 
 
@@ -353,7 +352,7 @@ def test_svm_details_exported_from_package_root():
 
 
 def test_parse_svm_response_raw_metadata_preserves_full_response():
-    from hyundai_kia_connect_api.svm import parse_svm_response
+    from hyundai_kia_connect_api.HyundaiBlueLinkApiUSA import parse_svm_response
 
     image = b"\xff\xd8\xff\xe0fakejpg"
     response = _make_svm_response(image, "2026-06-23T12:34:56Z")

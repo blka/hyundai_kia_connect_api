@@ -2,6 +2,7 @@
 
 # pylint:disable=logging-fstring-interpolation,deprecated-method,invalid-name,broad-exception-caught,unused-argument,missing-function-docstring
 
+import base64
 import datetime as dt
 import logging
 import time
@@ -30,7 +31,7 @@ from .const import (
     TEMPERATURE_UNITS,
     VEHICLE_LOCK_ACTION,
 )
-from .svm import SVMDetails, parse_svm_response, redact_svm_response_for_log
+from .svm import SVMDetails, _parse_bool, _parse_float, _parse_int, redact_svm_metadata
 from .Token import Token
 from .utils import (
     float_or_none,
@@ -112,6 +113,73 @@ def _safe_parse_json(response, action_name: str):
         return None
 
     return response.json()
+
+
+def _parse_door_open(door_open: dict | None) -> dict[str, bool] | None:
+    if not door_open:
+        return None
+    mapping = {
+        "frontLeft": "frontLeft",
+        "frontRight": "frontRight",
+        "backLeft": "backLeft",
+        "backRight": "backRight",
+    }
+    result = {}
+    for our_key, api_key in mapping.items():
+        result[our_key] = _parse_bool(door_open.get(api_key))
+    return result
+
+
+def parse_svm_response(response: dict, timezone: dt.timezone) -> SVMDetails:
+    """Parse a getSVMDetails response into SVMDetails.
+
+    Args:
+        response: parsed JSON from `GET /ac/v2/svm/getSVMDetails`.
+        timezone: timezone to use when parsing the capture timestamp.
+
+    Returns:
+        SVMDetails with decoded image bytes and metadata.
+    """
+    detail = get_child_value(response, "svmDetails.0.svmDetail") or {}
+    image_b64 = detail.get("svmImage", "")
+    image_bytes = base64.b64decode(image_b64) if image_b64 else b""
+
+    captured_at_raw = get_child_value(detail, "gpsDetail.time")
+    captured_at = None
+    if captured_at_raw:
+        try:
+            captured_at = parse_datetime(captured_at_raw, timezone)
+        except (ValueError, TypeError):
+            _LOGGER.debug("Unable to parse SVM capture timestamp: %s", captured_at_raw)
+
+    image_size_raw = detail.get("imageSize")
+    image_size = None
+    if isinstance(image_size_raw, list) and len(image_size_raw) >= 2:
+        width = _parse_int(image_size_raw[0])
+        height = _parse_int(image_size_raw[1])
+        if width is not None and height is not None:
+            image_size = (width, height)
+
+    speed_value = _parse_float(get_child_value(detail, "gpsDetail.speed.value"))
+    speed_unit = get_child_value(detail, "gpsDetail.speed.unit")
+
+    # Store the full response for advanced consumers, but redact the base64
+    # image so we don't duplicate the image bytes in memory.
+    raw_metadata = redact_svm_metadata(response, gps=False)
+
+    return SVMDetails(
+        image_bytes=image_bytes,
+        captured_at=captured_at,
+        captured_at_raw=captured_at_raw,
+        latitude=_parse_float(get_child_value(detail, "gpsDetail.coord.lat")),
+        longitude=_parse_float(get_child_value(detail, "gpsDetail.coord.lon")),
+        heading=_parse_int(get_child_value(detail, "gpsDetail.head")),
+        speed=(speed_value, speed_unit),
+        door_open=_parse_door_open(detail.get("doorOpen")),
+        trunk_open=_parse_bool(detail.get("trunkOpen")),
+        image_size=image_size,
+        raw_metadata=raw_metadata,
+    )
 
 
 class cipherAdapter(HTTPAdapter):
@@ -952,8 +1020,7 @@ class HyundaiBlueLinkApiUSA(ApiImpl):
         response_json = response.json()
         _check_response_for_errors(response_json)
         _LOGGER.debug(
-            f"{DOMAIN} - get_svm_details response: "
-            f"{redact_svm_response_for_log(response_json)}"
+            f"{DOMAIN} - get_svm_details response: {redact_svm_metadata(response_json)}"
         )
 
         return parse_svm_response(response_json, self.data_timezone)

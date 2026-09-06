@@ -1,15 +1,21 @@
-"""SVM / Find My Car data model and response helpers."""
+"""SVM shared data model and helpers (region-agnostic).
+
+Region-specific response parsing lives in the region API classes
+(HyundaiBlueLinkApiUSA, and the EU GSPA implementation later); this module
+holds only what works for all regions.
+"""
 
 from __future__ import annotations
 
-import base64
 import datetime as dt
-import logging
 from dataclasses import dataclass
+from typing import Any
 
-from .utils import get_child_value, parse_datetime
-
-_LOGGER = logging.getLogger(__name__)
+# Keys redacted wherever they appear in an SVM payload. "coord" covers
+# lat/lon/alt for every region's response shape.
+SVM_IMAGE_REDACT_KEYS = ("svmImage",)
+SVM_LOG_REDACT_KEYS = ("svmImage", "coord", "head")
+SVM_REDACTED = "<redacted>"
 
 
 def _parse_bool(value: str | int | bool | None) -> bool | None:
@@ -53,128 +59,28 @@ class SVMDetails:
     raw_metadata: dict | None = None
 
 
-def _parse_door_open(door_open: dict | None) -> dict[str, bool] | None:
-    if not door_open:
-        return None
-    mapping = {
-        "frontLeft": "frontLeft",
-        "frontRight": "frontRight",
-        "backLeft": "backLeft",
-        "backRight": "backRight",
-    }
-    result = {}
-    for our_key, api_key in mapping.items():
-        result[our_key] = _parse_bool(door_open.get(api_key))
-    return result
+def redact_svm_metadata(data: dict[str, Any], *, gps: bool = True) -> dict[str, Any]:
+    """Return a copy of an SVM payload with sensitive keys redacted.
 
-
-def parse_svm_response(response: dict, timezone: dt.timezone) -> SVMDetails:
-    """Parse a getSVMDetails response into SVMDetails.
-
-    Args:
-        response: parsed JSON from `GET /ac/v2/svm/getSVMDetails`.
-        timezone: timezone to use when parsing the capture timestamp.
-
-    Returns:
-        SVMDetails with decoded image bytes and metadata.
+    Recursively redacts the base64 image wherever it appears, so one helper
+    covers every region's response shape. With ``gps=True`` (the default,
+    for debug logging) GPS-bearing keys are redacted too; with ``gps=False``
+    coordinates are preserved for ``SVMDetails.raw_metadata`` consumers —
+    the typed fields on ``SVMDetails`` already carry the coordinates.
+    Non-dict input yields an empty dict.
     """
-    detail = get_child_value(response, "svmDetails.0.svmDetail") or {}
-    image_b64 = detail.get("svmImage", "")
-    image_bytes = base64.b64decode(image_b64) if image_b64 else b""
-
-    captured_at_raw = get_child_value(detail, "gpsDetail.time")
-    captured_at = None
-    if captured_at_raw:
-        try:
-            captured_at = parse_datetime(captured_at_raw, timezone)
-        except (ValueError, TypeError):
-            _LOGGER.debug("Unable to parse SVM capture timestamp: %s", captured_at_raw)
-
-    image_size_raw = detail.get("imageSize")
-    image_size = None
-    if isinstance(image_size_raw, list) and len(image_size_raw) >= 2:
-        width = _parse_int(image_size_raw[0])
-        height = _parse_int(image_size_raw[1])
-        if width is not None and height is not None:
-            image_size = (width, height)
-
-    speed_value = _parse_float(get_child_value(detail, "gpsDetail.speed.value"))
-    speed_unit = get_child_value(detail, "gpsDetail.speed.unit")
-
-    # Store the full response for advanced consumers, but redact the base64
-    # image so we don't duplicate the image bytes in memory.
-    raw_metadata = _redact_svm_image_in_response(response)
-
-    return SVMDetails(
-        image_bytes=image_bytes,
-        captured_at=captured_at,
-        captured_at_raw=captured_at_raw,
-        latitude=_parse_float(get_child_value(detail, "gpsDetail.coord.lat")),
-        longitude=_parse_float(get_child_value(detail, "gpsDetail.coord.lon")),
-        heading=_parse_int(get_child_value(detail, "gpsDetail.head")),
-        speed=(speed_value, speed_unit),
-        door_open=_parse_door_open(detail.get("doorOpen")),
-        trunk_open=_parse_bool(detail.get("trunkOpen")),
-        image_size=image_size,
-        raw_metadata=raw_metadata,
-    )
-
-
-def _redact_svm_image_in_response(response: dict) -> dict:
-    """Return a copy of an SVM response with the base64 image redacted.
-
-    Only the first entry's ``svmDetails[0].svmDetail.svmImage`` is replaced,
-    preserving the rest of the response structure for raw_metadata consumers.
-    """
-    if not response:
+    if not isinstance(data, dict):
         return {}
-    safe = dict(response)
-    svm_details = safe.get("svmDetails")
-    if isinstance(svm_details, list) and svm_details:
-        svm_details = list(svm_details)
-        safe["svmDetails"] = svm_details
-        first = svm_details[0]
-        if isinstance(first, dict):
-            first = dict(first)
-            svm_details[0] = first
-            detail = first.get("svmDetail")
-            if isinstance(detail, dict):
-                detail = dict(detail)
-                first["svmDetail"] = detail
-                detail["svmImage"] = "<redacted>"
-    return safe
+    redact_keys = SVM_LOG_REDACT_KEYS if gps else SVM_IMAGE_REDACT_KEYS
 
+    def _redact(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: SVM_REDACTED if key in redact_keys else _redact(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [_redact(item) for item in value]
+        return value
 
-def redact_svm_response_for_log(response: dict) -> dict:
-    """Return a copy of an SVM response safe for debug logging.
-
-    Removes the base64 image and GPS coordinates.
-    """
-    safe = _redact_svm_image_in_response(response)
-    if "svmDetails" in safe and isinstance(safe["svmDetails"], list):
-        safe["svmDetails"] = [
-            _redact_svm_gps_in_detail_entry(entry) for entry in safe["svmDetails"]
-        ]
-    return safe
-
-
-def _redact_svm_gps_in_detail_entry(entry: dict) -> dict:
-    if not isinstance(entry, dict):
-        return entry
-    safe_entry = dict(entry)
-    if "svmDetail" in safe_entry and isinstance(safe_entry["svmDetail"], dict):
-        safe_detail = dict(safe_entry["svmDetail"])
-        gps = safe_detail.get("gpsDetail")
-        if isinstance(gps, dict):
-            safe_gps = dict(gps)
-            coord = safe_gps.get("coord")
-            if isinstance(coord, dict):
-                safe_coord = dict(coord)
-                safe_coord["lat"] = "<redacted>"
-                safe_coord["lon"] = "<redacted>"
-                safe_coord["alt"] = "<redacted>"
-                safe_gps["coord"] = safe_coord
-            safe_gps["head"] = "<redacted>"
-            safe_detail["gpsDetail"] = safe_gps
-        safe_entry["svmDetail"] = safe_detail
-    return safe_entry
+    return _redact(data)
