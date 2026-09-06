@@ -31,7 +31,7 @@ from .const import (
     TEMPERATURE_UNITS,
     VEHICLE_LOCK_ACTION,
 )
-from .svm import SVMDetails, _parse_bool, _parse_float, _parse_int, redact_svm_metadata
+from .svm import SVMDetails, _parse_bool, _parse_int, redact_svm_metadata
 from .Token import Token
 from .utils import (
     float_or_none,
@@ -160,7 +160,7 @@ def parse_svm_response(response: dict, timezone: dt.timezone) -> SVMDetails:
         if width is not None and height is not None:
             image_size = (width, height)
 
-    speed_value = _parse_float(get_child_value(detail, "gpsDetail.speed.value"))
+    speed_value = float_or_none(get_child_value(detail, "gpsDetail.speed.value"))
     speed_unit = get_child_value(detail, "gpsDetail.speed.unit")
 
     # Store the full response for advanced consumers, but redact the base64
@@ -171,8 +171,8 @@ def parse_svm_response(response: dict, timezone: dt.timezone) -> SVMDetails:
         image_bytes=image_bytes,
         captured_at=captured_at,
         captured_at_raw=captured_at_raw,
-        latitude=_parse_float(get_child_value(detail, "gpsDetail.coord.lat")),
-        longitude=_parse_float(get_child_value(detail, "gpsDetail.coord.lon")),
+        latitude=float_or_none(get_child_value(detail, "gpsDetail.coord.lat")),
+        longitude=float_or_none(get_child_value(detail, "gpsDetail.coord.lon")),
         heading=_parse_int(get_child_value(detail, "gpsDetail.head")),
         speed=(speed_value, speed_unit),
         door_open=_parse_door_open(detail.get("doorOpen")),

@@ -35,15 +35,6 @@ def _parse_int(value: str | int | None) -> int | None:
         return None
 
 
-def _parse_float(value: str | float | None) -> float | None:
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (ValueError, TypeError):
-        return None
-
-
 @dataclass
 class SVMDetails:
     image_bytes: bytes
